@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { backendProxy, backendRefresh, backendGetMe } from "@/lib/session/backend";
+import {
+  backendProxy,
+  backendRefresh,
+  backendGetMe,
+  BackendApiError,
+} from "@/lib/session/backend";
 import { getServerSession, setSessionCookies } from "@/lib/session/server";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
@@ -65,12 +70,13 @@ async function handleProxy(
 
     return response;
   } catch (err) {
+    const status = err instanceof BackendApiError ? err.status : 500;
     return NextResponse.json(
       {
         success: false,
         error: { message: err instanceof Error ? err.message : "Request failed" },
       },
-      { status: 400 }
+      { status }
     );
   }
 }
@@ -85,4 +91,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
 export async function POST(request: NextRequest, context: RouteContext) {
   return handleProxy(request, context, "POST");
+}
+
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  return handleProxy(request, context, "DELETE");
 }

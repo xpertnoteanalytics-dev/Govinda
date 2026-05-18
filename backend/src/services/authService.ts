@@ -8,6 +8,7 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from "../utils/jwt";
+import { resolveObjectIdString } from "../utils/resolveId";
 
 const SALT_ROUNDS = 12;
 
@@ -166,12 +167,9 @@ async function issueTokens(user: {
   _id: { toString(): string };
   email: string;
   role: string;
-  tenantId: { toString(): string };
+  tenantId: unknown;
 }): Promise<AuthTokens> {
-  const tenantId =
-    typeof user.tenantId === "object" && user.tenantId !== null
-      ? user.tenantId.toString()
-      : String(user.tenantId);
+  const tenantId = resolveObjectIdString(user.tenantId, "tenantId");
 
   const accessToken = signAccessToken({
     sub: user._id.toString(),

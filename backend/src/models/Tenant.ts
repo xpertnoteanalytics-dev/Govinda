@@ -9,6 +9,7 @@ export interface ITenant extends Document {
   settings: {
     timezone: string;
     locale: string;
+    aiSystemPrompt?: string;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -47,6 +48,7 @@ const tenantSchema = new Schema<ITenant>(
     settings: {
       timezone: { type: String, default: "UTC" },
       locale: { type: String, default: "en-US" },
+      aiSystemPrompt: { type: String, maxlength: 4000 },
     },
   },
   { timestamps: true }

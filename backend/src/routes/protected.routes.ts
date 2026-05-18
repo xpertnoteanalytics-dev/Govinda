@@ -7,6 +7,7 @@ import { validate } from "../middleware/validate";
 import { ROLES } from "../types/roles";
 import * as dashboardController from "../controllers/dashboardController";
 import * as profileController from "../controllers/profileController";
+import aiRoutes from "./ai.routes";
 
 const router = Router();
 
@@ -21,6 +22,8 @@ router.get("/dashboard", (_req, res) => {
     },
   });
 });
+
+router.use("/ai", aiRoutes);
 
 router.get("/analytics", dashboardController.analytics);
 

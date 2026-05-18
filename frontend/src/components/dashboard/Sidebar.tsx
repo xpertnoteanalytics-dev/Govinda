@@ -14,6 +14,7 @@ import {
   X,
   UserCircle,
   Shield,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { APP_NAME, ROLES } from "@/lib/constants";
@@ -22,6 +23,7 @@ import { RoleBadge } from "@/components/auth/RoleBadge";
 
 const navItems = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/chat", label: "AI Assistant", icon: Sparkles },
   { href: "/dashboard/profile", label: "Profile", icon: UserCircle },
   {
     href: "/dashboard/admin",
@@ -110,7 +112,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             const Icon = item.icon;
             const isActive =
               pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
+              (item.href !== "/dashboard" &&
+                item.href !== "/dashboard/chat" &&
+                pathname.startsWith(item.href)) ||
+              (item.href === "/dashboard/chat" && pathname.startsWith("/dashboard/chat"));
 
             if (item.disabled) {
               return (

@@ -22,4 +22,8 @@ export const env = {
   },
   clientUrl: process.env.CLIENT_URL ?? "http://localhost:3000",
   isProduction: process.env.NODE_ENV === "production",
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY ?? "",
+    model: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
+  },
 } as const;

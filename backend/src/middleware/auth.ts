@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { AppError } from "../utils/AppError";
 import { verifyAccessToken } from "../utils/jwt";
+import { isValidObjectIdString } from "../utils/resolveId";
 import type { Role } from "../types/roles";
 
 export function authenticate(
@@ -18,6 +19,13 @@ export function authenticate(
 
   try {
     const payload = verifyAccessToken(token);
+
+    if (!isValidObjectIdString(payload.tenantId) || !isValidObjectIdString(payload.sub)) {
+      return next(
+        new AppError(401, "Invalid session. Please sign in again.", "INVALID_SESSION")
+      );
+    }
+
     req.user = {
       id: payload.sub,
       email: payload.email,

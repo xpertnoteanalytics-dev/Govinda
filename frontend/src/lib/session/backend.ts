@@ -12,6 +12,16 @@ interface ApiResponse<T> {
   error?: { message: string };
 }
 
+export class BackendApiError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "BackendApiError";
+  }
+}
+
 export async function backendFetch<T>(
   path: string,
   options: RequestInit = {}
@@ -26,7 +36,10 @@ export async function backendFetch<T>(
 
   const json = (await res.json()) as ApiResponse<T>;
   if (!res.ok || !json.success) {
-    throw new Error(json.error?.message ?? "Request failed");
+    throw new BackendApiError(
+      res.status,
+      json.error?.message ?? "Request failed"
+    );
   }
 
   return json.data as T;
