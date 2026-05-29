@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { APP_NAME } from "@/lib/constants";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
     default: APP_NAME,
     template: `%s | ${APP_NAME}`,
   },
-  description: "Multi-tenant healthcare AI platform",
+  description: "Healthcare operations and patient engagement platform",
 };
 
 export default function RootLayout({
@@ -23,8 +24,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body className="min-h-screen">{children}</body>
+    <html lang="en" className={`${inter.variable} dark`} suppressHydrationWarning>
+      <body className="min-h-screen">
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   );
 }

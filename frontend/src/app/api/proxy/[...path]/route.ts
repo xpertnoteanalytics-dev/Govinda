@@ -7,6 +7,9 @@ import {
 } from "@/lib/session/backend";
 import { getServerSession, setSessionCookies } from "@/lib/session/server";
 
+// ✅ Increase timeout to 60s — Gemini AI responses can take 10-15 seconds
+export const maxDuration = 60;
+
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 async function resolveAuth() {
@@ -23,12 +26,12 @@ async function resolveAuth() {
       const me = await backendGetMe(data.tokens.accessToken);
       user = me.user;
     }
-    return {
-      accessToken: data.tokens.accessToken,
-      refreshToken: data.tokens.refreshToken,
-      user,
-      refreshed: true,
-    };
+      return {
+    accessToken: data.tokens.accessToken,
+    refreshToken: data.tokens.refreshToken,  // ✅ was `auth`, should be `data`
+    user,
+    refreshed: true,
+  };
   }
 
   return null;

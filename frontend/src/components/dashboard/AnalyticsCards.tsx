@@ -77,11 +77,11 @@ export function AnalyticsCards() {
       trend: analytics.plan,
     },
     {
-      label: "Security",
-      value: "JWT",
+      label: "Access",
+      value: "Protected",
       icon: Shield,
-      description: "Encrypted session",
-      trend: "Secure",
+      description: "Secure sign-in",
+      trend: "Active",
     },
     {
       label: "Platform",
@@ -123,7 +123,7 @@ export function AnalyticsCards() {
           <CardHeader className="p-0">
             <CardTitle>Recent team members</CardTitle>
             <CardDescription>
-              Latest members in {analytics.tenantSlug}
+              Recent additions to {analytics.tenantName}
             </CardDescription>
           </CardHeader>
           <ul className="mt-4 divide-y divide-slate-100">

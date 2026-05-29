@@ -9,11 +9,12 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variants = {
   primary:
-    "bg-brand-600 text-white hover:bg-brand-700 shadow-sm disabled:bg-brand-400",
+    "bg-brand-600 text-white shadow-sm shadow-brand-900/20 hover:bg-brand-500 hover:shadow-glow disabled:bg-brand-800/60",
   secondary:
-    "bg-white text-ink border border-slate-200 hover:bg-slate-50 shadow-card",
-  ghost: "text-ink-muted hover:text-ink hover:bg-slate-100",
-  danger: "bg-clinical-danger text-white hover:bg-red-700",
+    "border border-slate-200/80 bg-white text-ink shadow-card hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10",
+  ghost:
+    "text-ink-muted hover:bg-slate-100 hover:text-ink dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white",
+  danger: "bg-clinical-danger text-white shadow-sm hover:bg-red-700",
 };
 
 const sizes = {
@@ -40,7 +41,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled || isLoading}
         className={cn(
-          "inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-colors focus-visible:outline-none disabled:cursor-not-allowed",
+          "inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all duration-200 focus-visible:outline-none disabled:cursor-not-allowed",
           variants[variant],
           sizes[size],
           className

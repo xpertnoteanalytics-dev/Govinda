@@ -8,10 +8,27 @@ import { ROLES } from "../types/roles";
 import * as dashboardController from "../controllers/dashboardController";
 import * as profileController from "../controllers/profileController";
 import aiRoutes from "./ai.routes";
+import placesRoutes from "./places.routes";
+import callsRoutes from "./calls.routes";
+import emailsRoutes from "./emails.routes";
+import whatsappRoutes from "./whatsapp.routes";
+import avatarRoutes from "./avatar.routes";
+import voiceRoutes from "./voice.routes";
+import operationsRoutes from "./operations.routes";
+import { rateLimit } from "../middleware/rateLimit";
+import { env } from "../config/env";
 
 const router = Router();
 
-router.use(authenticate, enforceTenantScope);
+router.use(
+  authenticate,
+  enforceTenantScope,
+  rateLimit({
+    windowMs: env.rateLimit.windowMs,
+    max: env.rateLimit.max,
+    keyPrefix: "api",
+  })
+);
 
 router.get("/dashboard", (_req, res) => {
   res.json({
@@ -24,6 +41,13 @@ router.get("/dashboard", (_req, res) => {
 });
 
 router.use("/ai", aiRoutes);
+router.use("/places", placesRoutes);
+router.use("/calls", callsRoutes);
+router.use("/emails", emailsRoutes);
+router.use("/whatsapp", whatsappRoutes);
+router.use("/avatar", avatarRoutes);
+router.use("/voice", voiceRoutes);
+router.use("/operations", operationsRoutes);
 
 router.get("/analytics", dashboardController.analytics);
 

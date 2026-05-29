@@ -9,7 +9,7 @@ export default function SignupPage() {
   return (
     <AuthLayout
       title="Create your organization"
-      subtitle="Set up your tenant workspace and admin account"
+      subtitle="Set up your organization workspace and admin account"
     >
       <SignupForm />
     </AuthLayout>

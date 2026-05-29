@@ -31,18 +31,17 @@ export default function HomePage() {
 
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-12 sm:px-6 sm:pt-20">
         <div className="mx-auto max-w-3xl text-center">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-1.5 text-sm font-medium text-brand-800">
+          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-1.5 text-sm font-medium text-brand-800 dark:border-brand-500/30 dark:bg-brand-500/10 dark:text-brand-200">
             <Shield className="h-4 w-4" aria-hidden />
-            HIPAA-ready foundation
+            Healthcare operations workflow
           </div>
-          <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl">
-            Healthcare operations,{" "}
-            <span className="text-brand-700">built for scale</span>
+          <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl dark:text-white">
+            Patient engagement & care coordination,{" "}
+            <span className="text-brand-700 dark:text-brand-400">made simple</span>
           </h1>
-          <p className="mt-6 text-lg text-ink-muted">
-            Govinda AI is a multi-tenant platform foundation for clinics and health
-            systems — secure authentication, organization isolation, and role-based
-            access out of the box.
+          <p className="mt-6 text-lg text-ink-muted dark:text-slate-400">
+            Find care, coordinate outreach, book appointments, share reports, and
+            track operations — one calm workspace for your care team.
           </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link

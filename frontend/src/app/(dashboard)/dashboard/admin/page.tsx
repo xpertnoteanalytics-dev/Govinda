@@ -36,14 +36,14 @@ export default function AdminPage() {
           <CardHeader className="p-0">
             <CardTitle>Organization admin</CardTitle>
             <CardDescription>
-              Tenant-scoped administration panel
+              Manage your organization workspace
             </CardDescription>
           </CardHeader>
-          <ul className="mt-4 space-y-2 text-sm text-ink-muted">
+          <ul className="mt-4 space-y-2 text-sm text-ink-muted dark:text-slate-400">
             <li>• User management and invitations</li>
-            <li>• Role assignments within your tenant</li>
+            <li>• Role assignments for your team</li>
             <li>• Billing and plan configuration</li>
-            <li>• Security and compliance settings</li>
+            <li>• Security and access settings</li>
           </ul>
         </AnimatedCard>
       </div>

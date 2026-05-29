@@ -22,13 +22,12 @@ export function AuthLayout({
             <span className="text-lg font-semibold text-ink">{APP_NAME}</span>
           </Link>
           <div className="max-w-md">
-            <h2 className="text-3xl font-bold tracking-tight text-ink">
-              Secure healthcare operations platform
+            <h2 className="text-3xl font-bold tracking-tight text-ink dark:text-white">
+              Healthcare operations, one workspace
             </h2>
-            <p className="mt-4 text-ink-muted">
-              Multi-tenant architecture with organization isolation, JWT
-              authentication, and role-based access — ready for your clinical
-              workflows.
+            <p className="mt-4 text-ink-muted dark:text-slate-400">
+              Find care, call and message facilities, coordinate appointments, and
+              support patients — with secure sign-in for your organization.
             </p>
           </div>
           <p className="text-sm text-ink-subtle">

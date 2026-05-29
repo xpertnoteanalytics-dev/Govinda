@@ -37,7 +37,7 @@ export function ChatLayout({ chatId }: ChatLayoutProps) {
       <button
         type="button"
         onClick={() => setSidebarOpen(true)}
-        className="absolute left-4 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm lg:hidden"
+        className="absolute left-4 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-slate-900/90 text-white shadow-sm lg:hidden"
         aria-label="Open conversations"
       >
         <Menu className="h-4 w-4" />

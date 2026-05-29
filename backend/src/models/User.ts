@@ -75,9 +75,9 @@ userSchema.virtual("fullName").get(function (this: IUser) {
 userSchema.set("toJSON", {
   virtuals: true,
   transform(_doc, ret) {
-    delete ret.password;
-    delete ret.refreshTokenHash;
-    delete ret.__v;
+    delete (ret as { password?: string }).password;
+    delete (ret as { refreshTokenHash?: string }).refreshTokenHash;
+    delete (ret as { __v?: number }).__v;
     return ret;
   },
 });

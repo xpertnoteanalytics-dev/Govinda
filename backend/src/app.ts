@@ -5,6 +5,8 @@ import morgan from "morgan";
 import { env } from "./config/env";
 import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import appointmentRoutes from "./routes/appointments";
+import feedbackRoutes from "./routes/feedback";
 
 export function createApp() {
   const app = express();
@@ -21,6 +23,8 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
 
   app.use("/api", routes);
+  app.use("/api/v1/appointments", appointmentRoutes);
+app.use("/api/v1/feedback", feedbackRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

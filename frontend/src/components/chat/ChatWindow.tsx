@@ -22,9 +22,9 @@ interface ChatWindowProps {
 }
 
 const SUGGESTIONS = [
-  "How can we improve patient intake workflows?",
-  "Draft a HIPAA-compliant reminder message template",
-  "What should our clinical staff onboarding checklist include?",
+  "Help me coordinate a patient appointment with a nearby clinic",
+  "Draft a simple Hindi follow-up message for lab report sharing",
+  "What should I ask a pharmacy about medicine availability?",
 ];
 
 export function ChatWindow({ chatId, onChatsChange }: ChatWindowProps) {
@@ -143,29 +143,29 @@ export function ChatWindow({ chatId, onChatsChange }: ChatWindowProps) {
               animate={{ opacity: 1, y: 0 }}
               className="flex flex-col items-center py-12 text-center"
             >
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-elevated">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
                 <Sparkles className="h-8 w-8" aria-hidden />
               </div>
-              <h2 className="mt-6 text-xl font-bold text-ink">
-                Hi{user ? `, ${user.firstName}` : ""} — I&apos;m Govinda AI
+              <h2 className="mt-6 text-xl font-bold tracking-tight text-white">
+                Hi{user ? `, ${user.firstName}` : ""} — healthcare operations assistant
               </h2>
-              <p className="mt-2 max-w-md text-sm text-ink-muted">
-                Your healthcare operations copilot for {user?.tenant.name ?? "your organization"}.
-                Ask about workflows, compliance, templates, and clinical admin best practices.
+              <p className="mt-2 max-w-md text-sm text-slate-400">
+                Coordinate care, outreach, and patient communication for{" "}
+                {user?.tenant.name ?? "your organization"}.
               </p>
 
               <div className="mt-8 grid w-full max-w-lg gap-3 sm:grid-cols-3">
                 {[
-                  { icon: Stethoscope, label: "Clinical workflows" },
-                  { icon: Shield, label: "Compliance guidance" },
-                  { icon: FileText, label: "Documentation help" },
+                  { icon: Stethoscope, label: "Care coordination" },
+                  { icon: Shield, label: "Patient communication" },
+                  { icon: FileText, label: "Report guidance" },
                 ].map(({ icon: Icon, label }) => (
                   <div
                     key={label}
-                    className="flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-card"
+                    className="flex flex-col items-center gap-2 rounded-xl border border-white/10 bg-white/5 p-4"
                   >
-                    <Icon className="h-5 w-5 text-brand-600" aria-hidden />
-                    <span className="text-xs font-medium text-ink-muted">{label}</span>
+                    <Icon className="h-5 w-5 text-brand-400" aria-hidden />
+                    <span className="text-xs font-medium text-slate-400">{label}</span>
                   </div>
                 ))}
               </div>
@@ -180,7 +180,7 @@ export function ChatWindow({ chatId, onChatsChange }: ChatWindowProps) {
                     type="button"
                     onClick={() => handleSuggestion(s)}
                     disabled={isSending}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-ink-muted transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800 disabled:opacity-50"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-left text-sm text-slate-300 transition-all hover:border-brand-400/30 hover:bg-brand-500/10 hover:text-white disabled:opacity-50"
                   >
                     {s}
                   </button>

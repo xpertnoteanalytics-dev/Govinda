@@ -76,8 +76,8 @@ export function SignupForm() {
         required
         value={form.organizationName}
         onChange={(e) => updateField("organizationName", e.target.value)}
-        placeholder="Sunrise Medical Group"
-        hint="Creates your isolated tenant workspace"
+        placeholder="RKG Labs "
+        hint="Creates your organization workspace"
       />
 
       <Input
