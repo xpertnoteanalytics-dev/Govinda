@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Govinda AI
 
 Production-grade multi-tenant healthcare SaaS foundation.
@@ -162,3 +163,6 @@ See `backend/.env.example` and `frontend/.env.example`.
 - Add feature modules (patients, records)
 - Audit logging & HIPAA compliance controls
 - Tenant invitation flows
+=======
+# Govinda_ai
+>>>>>>> 5f6d19706ef61edf6d4944cad3ec0456d97b7d6e
