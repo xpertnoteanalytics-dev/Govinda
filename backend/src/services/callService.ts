@@ -1,3 +1,4 @@
+// src/services/callService.ts
 import { Call } from "../models";
 import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
@@ -37,17 +38,11 @@ export async function initiateCall(params: {
   category?: string;
   script?: string;
   scriptType?: CallScriptType;
-  agentPhone?: string;
 }) {
   const normalized = params.phoneNumber.replace(/\s/g, "");
   if (!/^\+?[\d]{8,15}$/.test(normalized)) {
     throw new AppError(400, "Invalid phone number", "INVALID_PHONE");
   }
-
-  const fromLeg =
-    (params.agentPhone?.replace(/\s/g, "") ||
-      env.exotel.fromNumber.replace(/\s/g, "")) ||
-    "";
 
   const call = await Call.create({
     tenantId: resolveObjectIdString(params.tenantId, "tenantId"),
@@ -62,14 +57,6 @@ export async function initiateCall(params: {
     direction: "outbound",
   });
 
-  if (!fromLeg) {
-    call.status = "failed";
-    call.notes =
-      "Missing first-leg phone (staff/agent). Set EXOTEL_FROM_NUMBER or pass agentPhone when placing the call.";
-    await call.save();
-    return serializeCall(call);
-  }
-
   let credentialsOk = true;
   try {
     if (
@@ -82,9 +69,8 @@ export async function initiateCall(params: {
       throw new Error("Exotel credentials not configured");
     }
 
-    const exotel = await exotelService.connectTwoLegCall({
-      fromLeg,
-      toLeg: normalized,
+    const exotel = await exotelService.initiateOutboundCall({
+      to: normalized,
       customField: call._id.toString(),
     });
 
@@ -127,7 +113,6 @@ export function serializeCall(
     };
   }
 
-  // ✅ FIXED: safe toISOString() — handles undefined/null dates in old DB records
   const now = new Date().toISOString();
 
   return {
@@ -170,8 +155,16 @@ export async function getCallAnalytics(tenantId: string, userId: string) {
 
   const [total, completed, failed, recent] = await Promise.all([
     Call.countDocuments({ tenantId: tenantOid, userId: userOid }),
-    Call.countDocuments({ tenantId: tenantOid, userId: userOid, status: "completed" }),
-    Call.countDocuments({ tenantId: tenantOid, userId: userOid, status: "failed" }),
+    Call.countDocuments({
+      tenantId: tenantOid,
+      userId: userOid,
+      status: "completed",
+    }),
+    Call.countDocuments({
+      tenantId: tenantOid,
+      userId: userOid,
+      status: "failed",
+    }),
     Call.find({ tenantId: tenantOid, userId: userOid })
       .sort({ createdAt: -1 })
       .limit(5)
@@ -189,7 +182,9 @@ export async function getCallAnalytics(tenantId: string, userId: string) {
     failedCalls: failed,
     successRate,
     recent: recent.map((c) => {
-      const row = serializeCall(c as unknown as ICall & { userId: PopulatedUser });
+      const row = serializeCall(
+        c as unknown as ICall & { userId: PopulatedUser }
+      );
       return {
         placeName: row.placeName,
         status: row.status,
@@ -213,18 +208,30 @@ function mapExotelTerminalStatus(
   return null;
 }
 
-export async function applyExotelStatusCallback(payload: Record<string, unknown>) {
-  const callSid = typeof payload.CallSid === "string" ? payload.CallSid : undefined;
+export async function applyExotelStatusCallback(
+  payload: Record<string, unknown>
+) {
+  console.log("[webhook] raw payload:", JSON.stringify(payload, null, 2));
+
+  const callSid =
+    typeof payload.CallSid === "string" ? payload.CallSid : undefined;
   const customField =
     typeof payload.CustomField === "string" ? payload.CustomField : undefined;
 
   let call: ICall | null = null;
+
   if (customField && /^[a-f\d]{24}$/i.test(customField)) {
     call = await Call.findById(customField);
   }
   if (!call && callSid) {
     call = await Call.findOne({ exotelCallSid: callSid });
   }
+  if (!call && typeof payload.To === "string") {
+    call = await Call.findOne({ phoneNumber: payload.To })
+      .sort({ createdAt: -1 })
+      .limit(1);
+  }
+
   if (!call) {
     console.warn("[callService] webhook: no call match", { callSid, customField });
     return { ok: false as const, reason: "not_found" };
@@ -240,12 +247,17 @@ export async function applyExotelStatusCallback(payload: Record<string, unknown>
   const convDuration = payload.ConversationDuration;
   if (typeof convDuration === "number") {
     call.durationSeconds = convDuration;
-  } else if (typeof convDuration === "string" && /^\d+$/.test(convDuration)) {
+  } else if (
+    typeof convDuration === "string" &&
+    /^\d+$/.test(convDuration)
+  ) {
     call.durationSeconds = parseInt(convDuration, 10);
   }
 
   const recording =
-    typeof payload.RecordingUrl === "string" ? payload.RecordingUrl : undefined;
+    typeof payload.RecordingUrl === "string"
+      ? payload.RecordingUrl
+      : undefined;
   if (recording) {
     call.recordingUrl = recording;
   }

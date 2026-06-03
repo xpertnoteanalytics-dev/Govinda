@@ -1,3 +1,4 @@
+// src/services/exotelService.ts
 import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
 
@@ -17,37 +18,31 @@ function assertExotelConfigured() {
 }
 
 function authHeader(): string {
-  const token = Buffer.from(`${env.exotel.apiKey}:${env.exotel.apiToken}`).toString(
-    "base64"
-  );
+  const token = Buffer.from(
+    `${env.exotel.apiKey}:${env.exotel.apiToken}`
+  ).toString("base64");
   return `Basic ${token}`;
 }
 
-/**
- * Exotel Connect API: dials `fromLeg` first; when answered, connects `toLeg`.
- * CallerId must be your ExoPhone (virtual number).
- * @see https://developer.exotel.com/api/make-a-call-api
- */
-export async function connectTwoLegCall(params: {
-  fromLeg: string;
-  toLeg: string;
+export async function initiateOutboundCall(params: {
+  to: string;
   customField?: string;
 }): Promise<{ callSid: string; status: string }> {
   assertExotelConfigured();
 
-  const from = params.fromLeg.replace(/\s/g, "");
-  const to = params.toLeg.replace(/\s/g, "");
-  if (!from || !to) {
-    throw new AppError(400, "From and To phone numbers are required", "INVALID_CALL_LEGS");
+  const to = params.to.replace(/\s/g, "");
+  if (!to) {
+    throw new AppError(400, "To phone number is required", "INVALID_CALL_LEGS");
   }
 
   const base = env.exotel.apiBase.replace(/\/$/, "");
   const url = `${base}/v1/Accounts/${env.exotel.accountSid}/Calls/connect.json`;
 
+  // Exotel: From = number to call, Url = app flow to connect them to
   const body = new URLSearchParams({
-    From: from,
-    To: to,
+    From: to,
     CallerId: env.exotel.exophone.replace(/\s/g, ""),
+    Url: `http://my.exotel.com/${env.exotel.accountSid}/exoml/start_voice/${env.exotel.appId}`,
     Record: "true",
   });
 
@@ -57,8 +52,6 @@ export async function connectTwoLegCall(params: {
 
   if (env.exotel.statusCallbackUrl) {
     body.set("StatusCallback", env.exotel.statusCallbackUrl);
-    body.append("StatusCallbackEvents[0]", "terminal");
-    body.set("StatusCallbackContentType", "application/json");
   }
 
   const res = await fetch(url, {
@@ -86,7 +79,7 @@ export async function connectTwoLegCall(params: {
     const msg =
       data.RestException?.Message ??
       (rawText?.length ? rawText.slice(0, 500) : "Exotel call failed");
-    console.error("[exotel] connect failed", {
+    console.error("[exotel] outbound call failed", {
       status: res.status,
       message: msg,
     });

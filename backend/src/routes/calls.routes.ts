@@ -1,3 +1,4 @@
+// src/routes/calls.routes.ts
 import { Router } from "express";
 import { body } from "express-validator";
 import { validate } from "../middleware/validate";
@@ -15,7 +16,11 @@ router.post(
     body("purpose").optional().isString().trim(),
     body("scriptType")
       .optional()
-      .isIn(["pharmacy_inquiry", "appointment_scheduling", "healthcare_coordination"]),
+      .isIn([
+        "pharmacy_inquiry",
+        "appointment_scheduling",
+        "healthcare_coordination",
+      ]),
   ]),
   callsController.generateScript
 );
@@ -29,8 +34,11 @@ router.post(
     body("script").optional().isString(),
     body("scriptType")
       .optional()
-      .isIn(["pharmacy_inquiry", "appointment_scheduling", "healthcare_coordination"]),
-    body("agentPhone").optional().isString().trim(),
+      .isIn([
+        "pharmacy_inquiry",
+        "appointment_scheduling",
+        "healthcare_coordination",
+      ]),
   ]),
   callsController.initiate
 );

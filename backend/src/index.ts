@@ -1,6 +1,13 @@
+// src/index.ts
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
 import { env } from "./config/env";
+import { WebSocketServer } from "ws";
+import type { RawData } from "ws";
+import type { IncomingMessage } from "http";
+import type { Socket } from "net";
+import { createRealtimeBridge } from "./services/realtimeBridge";
+import { Call } from "./models";
 
 async function bootstrap() {
   await connectDatabase();
@@ -9,6 +16,73 @@ async function bootstrap() {
 
   const server = app.listen(env.port, () => {
     console.log(`[api] Govinda AI API running on port ${env.port}`);
+
+    // Keep-alive for Render free tier
+    if (env.nodeEnv === "production") {
+      setInterval(() => {
+        fetch(`http://localhost:${env.port}/api/health`)
+          .catch(() => undefined);
+      }, 10 * 60 * 1000);
+    }
+  });
+
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    const pathname = req.url ?? "";
+    console.log("[ws] upgrade request for:", pathname);
+
+    if (pathname === "/ws") {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  wss.on("connection", (ws, req) => {
+    console.log("[ws] Exotel voicebot connected from", req.socket.remoteAddress);
+
+    const bridge = createRealtimeBridge(ws);
+
+    ws.on("message", async (message: RawData) => {
+      const raw = message.toString();
+
+      try {
+        const parsed = JSON.parse(raw) as {
+          event?: string;
+          start?: { callSid?: string };
+        };
+        if (parsed.event === "start" && parsed.start?.callSid) {
+          const callSid = parsed.start.callSid;
+          Call.findOne({ exotelCallSid: callSid })
+            .select("script")
+            .lean()
+            .then((doc) => {
+              if (doc?.script) {
+                (ws as typeof ws & { _callScript?: string })._callScript =
+                  doc.script;
+              }
+            })
+            .catch(() => undefined);
+        }
+      } catch {
+        // not JSON — ignore
+      }
+
+      bridge.handleExotelMessage(raw);
+    });
+
+    ws.on("close", (code, reason) => {
+      console.log("[ws] Exotel disconnected", code, reason.toString());
+      bridge.destroy();
+    });
+
+    ws.on("error", (err) => {
+      console.error("[ws] error", err.message);
+      bridge.destroy();
+    });
   });
 
   const shutdown = async (signal: string) => {

@@ -1,3 +1,4 @@
+// src/controllers/callsController.ts
 import { Request, Response, NextFunction } from "express";
 import * as callService from "../services/callService";
 import { Tenant } from "../models";
@@ -63,7 +64,6 @@ export async function initiate(
       category: req.body.category,
       script: req.body.script,
       scriptType: req.body.scriptType,
-      agentPhone: req.body.agentPhone,
     });
     res.status(201).json({ success: true, data: { call } });
   } catch (err) {

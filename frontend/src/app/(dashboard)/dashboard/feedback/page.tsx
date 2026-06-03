@@ -164,9 +164,9 @@ export default function FeedbackPage() {
 
                   {/* Feedback text */}
                   {fb.feedback && (
-                    <p className="text-sm text-muted-foreground leading-relaxed line-clamp-3">
-                      "{fb.feedback}"
-                    </p>
+                  <p className="text-sm text-muted-foreground leading-relaxed line-clamp-3">
+                         &quot;{fb.feedback}&quot;
+</p>
                   )}
 
                   {/* Source badge */}
