@@ -30,7 +30,6 @@ export function CallScriptModal({ place, open, onClose }: CallScriptModalProps) 
   const [script, setScript] = useState("");
   const [scriptType, setScriptType] = useState<CallScriptType>("pharmacy_inquiry");
   const [toNumber, setToNumber] = useState(place.phone ?? "");
-  const [agentPhone, setAgentPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [calling, setCalling] = useState(false);
   const [error, setError] = useState("");
@@ -84,12 +83,11 @@ export function CallScriptModal({ place, open, onClose }: CallScriptModalProps) 
         category: place.category,
         script: script || undefined,
         scriptType,
-        agentPhone: agentPhone.trim() || undefined,
       });
       if (call.status === "failed") {
         setError(call.notes || "Call could not be placed. Try again shortly.");
       } else {
-        setSuccess("Call connected — coordinate with the facility now.");
+        setSuccess("Call placed — the facility is being contacted directly.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Call failed");
@@ -102,16 +100,12 @@ export function CallScriptModal({ place, open, onClose }: CallScriptModalProps) 
     <ModalShell
       open={open}
       onClose={onClose}
-      title="Call coordination"
+      title="Call facility"
       subtitle={place.name}
       icon={Phone}
       iconClassName="bg-emerald-500/15 text-emerald-300"
     >
       <div className="space-y-4">
-        <StatusBanner variant="info">
-          Your phone rings first, then the facility is connected for coordination.
-        </StatusBanner>
-
         {error && <StatusBanner variant="error">{error}</StatusBanner>}
         {success && <StatusBanner variant="success">{success}</StatusBanner>}
 
@@ -140,28 +134,16 @@ export function CallScriptModal({ place, open, onClose }: CallScriptModalProps) 
           <LanguageToggle value={language} onChange={setLanguage} accent="brand" />
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="ops-label">Facility number</span>
-            <input
-              value={toNumber}
-              onChange={(e) => setToNumber(e.target.value)}
-              className="ops-input"
-              placeholder="+91..."
-              autoComplete="tel"
-            />
-          </label>
-          <label className="block">
-            <span className="ops-label">Your phone</span>
-            <input
-              value={agentPhone}
-              onChange={(e) => setAgentPhone(e.target.value)}
-              className="ops-input"
-              placeholder="Staff mobile"
-              autoComplete="tel"
-            />
-          </label>
-        </div>
+        <label className="block">
+          <span className="ops-label">Facility number</span>
+          <input
+            value={toNumber}
+            onChange={(e) => setToNumber(e.target.value)}
+            className="ops-input"
+            placeholder="+91..."
+            autoComplete="tel"
+          />
+        </label>
 
         <textarea
           value={script}

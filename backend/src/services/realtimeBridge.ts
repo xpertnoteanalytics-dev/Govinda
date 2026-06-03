@@ -2,21 +2,34 @@
 import WebSocket from "ws";
 import { env } from "../config/env";
 
+// ✅ Fixed: correct model name
 const OPENAI_REALTIME_URL =
-  "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
+  "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
 
 type ExotelEvent =
   | { event: "connected"; protocol: string; version: string }
-  | { event: "start"; start: { callSid: string; customParameters?: Record<string, string> } }
+  | {
+      event: "start";
+      start: {
+        callSid: string;
+        streamSid: string; // ✅ Added: separate from callSid
+        customParameters?: Record<string, string>;
+      };
+    }
   | { event: "media"; media: { chunk: number; timestamp: string; payload: string } }
   | { event: "stop"; stop: { callSid: string } }
+  | { event: "mark"; mark: { name: string } }
   | { event: "error"; error: { code: string; message: string } };
 
 export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
   let openAiWs: WebSocket | null = null;
   let streamSid = "";
+  let callSid = "";
   let sessionReady = false;
+  let sessionUpdated = false; // ✅ Added: track update separately
   const audioQueue: string[] = [];
+
+  // ─── helpers ────────────────────────────────────────────────────
 
   function flushQueue() {
     if (!openAiWs || openAiWs.readyState !== WebSocket.OPEN) return;
@@ -35,23 +48,33 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     }
   }
 
+  function sendToExotel(obj: unknown) {
+    if (exotelWs.readyState === WebSocket.OPEN) {
+      exotelWs.send(JSON.stringify(obj));
+    }
+  }
+
+  // ─── OpenAI connection ───────────────────────────────────────────
+
   function connectOpenAi() {
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
         Authorization: `Bearer ${env.openai.apiKey}`,
+        "OpenAI-Beta": "realtime=v1", // ✅ Required header
       },
     });
 
     openAiWs.on("open", () => {
       console.log("[bridge] OpenAI Realtime connected");
 
+      // ✅ Send session config immediately on open
       sendToOpenAi({
         type: "session.update",
         session: {
           modalities: ["audio", "text"],
           instructions: script
-            ? `You are an AI calling assistant. Your script: ${script}`
-            : "You are a helpful AI calling assistant. Be concise and professional.",
+            ? `You are an AI calling assistant for RKG Labs healthcare. Your script: ${script}. Be concise, warm, and professional. Speak in clear English or Hindi based on the caller.`
+            : "You are a helpful AI calling assistant for RKG Labs healthcare. Be concise, warm, and professional. Keep responses short since this is a phone call.",
           voice: "alloy",
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
@@ -76,51 +99,82 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
 
       const type = event.type as string;
 
-      if (type === "session.created" || type === "session.updated") {
+      // ✅ Fixed: session.created → mark ready + flush + greet ONCE
+      if (type === "session.created") {
+        console.log("[bridge] OpenAI session created");
         sessionReady = true;
         flushQueue();
-        // Trigger AI to speak first (greeting)
+        // Trigger AI greeting
         sendToOpenAi({ type: "response.create" });
         return;
       }
 
-      if (type === "response.audio.delta") {
-        const delta = event.delta as string | undefined;
-        if (delta && exotelWs.readyState === WebSocket.OPEN) {
-          exotelWs.send(
-            JSON.stringify({
-              event: "media",
-              streamSid,
-              media: { payload: delta },
-            })
-          );
+      // ✅ Fixed: session.updated → just flush, no extra greeting
+      if (type === "session.updated") {
+        console.log("[bridge] OpenAI session updated");
+        sessionUpdated = true;
+        if (!sessionReady) {
+          sessionReady = true;
+          flushQueue();
         }
         return;
       }
 
-      if (type === "response.audio.done") {
-        if (exotelWs.readyState === WebSocket.OPEN) {
-          exotelWs.send(
-            JSON.stringify({ event: "mark", streamSid, mark: { name: "ai_done" } })
-          );
+      // ✅ Stream audio delta back to Exotel
+      if (type === "response.audio.delta") {
+        const delta = event.delta as string | undefined;
+        if (delta) {
+          sendToExotel({
+            event: "media",
+            streamSid,
+            media: { payload: delta },
+          });
         }
+        return;
+      }
+
+      // ✅ Mark end of AI speech turn
+      if (type === "response.audio.done") {
+        sendToExotel({
+          event: "mark",
+          streamSid,
+          mark: { name: "ai_done" },
+        });
+        return;
+      }
+
+      // ✅ Log transcripts for debugging / saving later
+      if (type === "conversation.item.input_audio_transcription.completed") {
+        const transcript = event.transcript as string;
+        console.log(`[bridge] User said: "${transcript}" | callSid: ${callSid}`);
+        return;
+      }
+
+      if (type === "response.text.done") {
+        const text = event.text as string;
+        console.log(`[bridge] AI said: "${text}" | callSid: ${callSid}`);
         return;
       }
 
       if (type === "error") {
-        console.error("[bridge] OpenAI Realtime error", event.error);
+        console.error("[bridge] OpenAI Realtime error:", JSON.stringify(event.error));
+        return;
       }
     });
 
     openAiWs.on("close", (code, reason) => {
       console.log("[bridge] OpenAI Realtime closed", code, reason.toString());
       openAiWs = null;
+      sessionReady = false;
+      sessionUpdated = false;
     });
 
     openAiWs.on("error", (err) => {
-      console.error("[bridge] OpenAI Realtime WS error", err.message);
+      console.error("[bridge] OpenAI Realtime WS error:", err.message);
     });
   }
+
+  // ─── Exotel message handler ──────────────────────────────────────
 
   function handleExotelMessage(raw: string) {
     let evt: ExotelEvent;
@@ -139,27 +193,37 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       case "start":
-        streamSid = evt.start.callSid;
-        console.log("[bridge] stream started, callSid:", streamSid);
+        // ✅ Fixed: use streamSid from start event, keep callSid separate
+        callSid   = evt.start.callSid;
+        streamSid = evt.start.streamSid ?? evt.start.callSid;
+        console.log("[bridge] stream started — callSid:", callSid, "streamSid:", streamSid);
         connectOpenAi();
         break;
 
       case "media": {
         const payload = evt.media.payload;
         if (sessionReady) {
-          sendToOpenAi({ type: "input_audio_buffer.append", audio: payload });
+          sendToOpenAi({
+            type: "input_audio_buffer.append",
+            audio: payload,
+          });
         } else {
+          // Buffer audio until session is ready
           audioQueue.push(payload);
         }
         break;
       }
 
       case "stop":
-        console.log("[bridge] Exotel stream stopped, callSid:", evt.stop.callSid);
+        console.log("[bridge] Exotel stream stopped — callSid:", evt.stop.callSid);
         if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
           sendToOpenAi({ type: "input_audio_buffer.commit" });
           openAiWs.close(1000, "call ended");
         }
+        break;
+
+      case "mark":
+        console.log("[bridge] Exotel mark received:", evt.mark.name);
         break;
 
       case "error":
@@ -174,6 +238,8 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     }
   }
 
+  // ─── Cleanup ─────────────────────────────────────────────────────
+
   function destroy() {
     if (openAiWs) {
       try {
@@ -183,6 +249,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
       }
       openAiWs = null;
     }
+    sessionReady = false;
+    sessionUpdated = false;
+    audioQueue.length = 0;
   }
 
   return { handleExotelMessage, destroy };
