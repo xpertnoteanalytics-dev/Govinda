@@ -1,3 +1,4 @@
+// src/services/agent/agentTools.ts
 import type OpenAI from "openai";
 import * as mapsService from "../mapsService";
 import * as callService from "../callService";
@@ -63,7 +64,7 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
       function: {
         name: "initiate_phone_call",
         description:
-          "Initiate an outbound Exotel two-leg call: staff/agent phone is dialed first, then the facility. Use after searching places or generating a script. Pass agentPhone if EXOTEL_FROM_NUMBER is not set server-side.",
+          "Initiate an AI voicebot outbound call to a healthcare facility. The AI will speak directly to the facility.",
         parameters: {
           type: "object",
           properties: {
@@ -79,11 +80,6 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
                 "appointment_scheduling",
                 "healthcare_coordination",
               ],
-            },
-            agentPhone: {
-              type: "string",
-              description:
-                "Staff phone Exotel dials first (From leg). Required if org has no EXOTEL_FROM_NUMBER.",
             },
           },
           required: ["placeName", "phoneNumber"],
@@ -295,7 +291,6 @@ export async function executeAgentTool(
           | "appointment_scheduling"
           | "healthcare_coordination"
           | undefined,
-        agentPhone: args.agentPhone as string | undefined,
       });
       return JSON.stringify(call);
     }
