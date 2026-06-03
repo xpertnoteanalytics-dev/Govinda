@@ -6,13 +6,20 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc --skipLibCheck",
     "start": "node dist/index.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/morgan": "^1.9.10",
     "@types/multer": "^2.1.0",
+    "@types/node": "^22.19.19",
+    "@types/nodemailer": "^8.0.0",
     "@types/ws": "^8.18.1",
     "bcryptjs": "^2.4.3",
     "bottleneck": "^2.19.5",
@@ -24,18 +31,12 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.3",
     "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
     "nodemailer": "^8.0.8",
     "openai": "^4.104.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/morgan": "^1.9.10",
-    "@types/node": "^22.19.19",
-    "@types/nodemailer": "^8.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
