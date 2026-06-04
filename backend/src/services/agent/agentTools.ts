@@ -5,6 +5,7 @@ import * as callService from "../callService";
 import * as emailService from "../emailService";
 import * as whatsappService from "../whatsappService";
 import * as memoryService from "../memoryService";
+import { Appointment } from "../../models/Appointment";
 import type { OutreachType } from "../../types/outreach";
 import type { PlaceCategory } from "../../types/places";
 import type { AgentContext } from "./agentContext";
@@ -83,6 +84,26 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
             },
           },
           required: ["placeName", "phoneNumber"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "book_appointment",
+        description:
+          "Save an appointment to the database when a user wants to book one for a patient.",
+        parameters: {
+          type: "object",
+          properties: {
+            patientName: { type: "string", description: "Full name of the patient" },
+            service: { type: "string", description: "Type of service or consultation" },
+            appointmentDate: { type: "string", description: "Date of appointment e.g. 2024-12-25 or tomorrow" },
+            appointmentTime: { type: "string", description: "Time of appointment e.g. 10:00 AM" },
+            phone: { type: "string", description: "Patient phone number" },
+            notes: { type: "string", description: "Additional notes" },
+          },
+          required: ["patientName", "service", "appointmentDate"],
         },
       },
     },
@@ -293,6 +314,24 @@ export async function executeAgentTool(
           | undefined,
       });
       return JSON.stringify(call);
+    }
+    case "book_appointment": {
+      const appointment = await Appointment.create({
+        tenantId: ctx.tenantId,
+        patientName: String(args.patientName),
+        service: String(args.service),
+        appointmentDate: String(args.appointmentDate),
+        appointmentTime: args.appointmentTime ? String(args.appointmentTime) : "TBD",
+        phone: args.phone ? String(args.phone) : undefined,
+        notes: args.notes ? String(args.notes) : undefined,
+        source: "ai_agent",
+      });
+      console.log("[appointment] saved via agent tool:", appointment._id.toString());
+      return JSON.stringify({
+        success: true,
+        appointmentId: appointment._id.toString(),
+        message: `Appointment booked for ${String(args.patientName)} on ${String(args.appointmentDate)}`,
+      });
     }
     case "get_search_history": {
       const history = await mapsService.listSearchHistory(ctx.tenantId, ctx.userId);

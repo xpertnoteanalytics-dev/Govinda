@@ -1,3 +1,4 @@
+// src/services/aiService.ts
 import { GoogleGenerativeAI, GoogleGenerativeAIError } from "@google/generative-ai";
 import { Chat, Tenant } from "../models";
 import type { IChat, IChatMessage } from "../models/Chat";
@@ -5,10 +6,11 @@ import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
 import { resolveObjectIdString } from "../utils/resolveId";
 import type { Role } from "../types/roles";
+import * as agentService from "./agent/agentService";
+import { extractAppointmentAndSave } from "./appointmentExtractor";
 
 const BASE_SYSTEM_PROMPT = `You are Govinda AI, an expert healthcare operations assistant...`;
 
-// ─── Singleton GenAI client (avoids re-instantiation per request) ───────────
 let _genAI: GoogleGenerativeAI | null = null;
 
 function getGenAI(): GoogleGenerativeAI {
@@ -25,7 +27,6 @@ function getGenAI(): GoogleGenerativeAI {
   return _genAI;
 }
 
-// ─── Classify Gemini errors into AppErrors ───────────────────────────────────
 function classifyGeminiError(err: unknown): AppError {
   console.error("[Gemini] RAW:", JSON.stringify(err, Object.getOwnPropertyNames(err as object), 2));
   console.error("[Gemini] TYPE:", (err as any)?.constructor?.name);
@@ -54,7 +55,7 @@ function classifyGeminiError(err: unknown): AppError {
   console.error("[Gemini] NOT GoogleGenerativeAIError:", err);
   return new AppError(502, `AI failed: ${(err as any)?.message ?? "unknown"}`, "AI_GENERATION_FAILED");
 }
-// ─── Build system prompt ─────────────────────────────────────────────────────
+
 export async function buildSystemPrompt(tenantId: string, userRole: Role): Promise<string> {
   const tenant = await Tenant.findById(
     resolveObjectIdString(tenantId, "tenantId")
@@ -79,30 +80,27 @@ export async function buildSystemPrompt(tenantId: string, userRole: Role): Promi
   return parts.join("\n");
 }
 
-// ─── Format MongoDB messages → Gemini history format ────────────────────────
 function toGeminiHistory(messages: IChatMessage[]) {
   return messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",  // Gemini uses "model" not "assistant"
+      role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
     }));
 }
 
-// ─── Core Gemini call ────────────────────────────────────────────────────────
 async function generateAssistantReply(
   systemPrompt: string,
-  history: IChatMessage[],   // All messages BEFORE the current user message
+  history: IChatMessage[],
   userMessage: string
 ): Promise<string> {
   const genAI = getGenAI();
 
   const model = genAI.getGenerativeModel({
-    model: env.gemini.model,          // e.g. "gemini-1.5-flash"
-    systemInstruction: systemPrompt,  // ✅ Set ONCE here only
+    model: env.gemini.model,
+    systemInstruction: systemPrompt,
   });
 
-  // history = prior turns only; current message goes to sendMessage()
   const geminiHistory = toGeminiHistory(history);
 
   console.debug(
@@ -111,14 +109,12 @@ async function generateAssistantReply(
 
   const chat = model.startChat({
     history: geminiHistory,
-    // Optional: tune generation
     generationConfig: {
       maxOutputTokens: 2048,
       temperature: 0.7,
     },
   });
 
-  // ✅ Send ONLY the user message — no system prompt here
   const result = await chat.sendMessage(userMessage);
   const text = result.response.text();
 
@@ -130,7 +126,6 @@ async function generateAssistantReply(
   return text.trim();
 }
 
-// ─── Friendly fallback message ───────────────────────────────────────────────
 function friendlyUnavailableMessage(code?: string): string {
   if (code === "AI_SAFETY_BLOCK") {
     return "Your message was flagged by safety filters. Please rephrase and try again.";
@@ -145,7 +140,6 @@ function friendlyUnavailableMessage(code?: string): string {
   ].join("\n");
 }
 
-// ─── Utility helpers ─────────────────────────────────────────────────────────
 function deriveTitle(firstMessage: string): string {
   const cleaned = firstMessage.replace(/\s+/g, " ").trim();
   if (cleaned.length <= 48) return cleaned || "New conversation";
@@ -168,7 +162,6 @@ async function getOwnedChat(
   return chat;
 }
 
-// ─── Serializers ─────────────────────────────────────────────────────────────
 export function serializeChat(chat: IChat) {
   return {
     id: chat._id.toString(),
@@ -198,7 +191,6 @@ export function serializeChatSummary(chat: IChat) {
   };
 }
 
-// ─── Public service methods ───────────────────────────────────────────────────
 export async function listChats(tenantId: string, userId: string) {
   const chats = await Chat.find({
     tenantId: resolveObjectIdString(tenantId, "tenantId"),
@@ -253,7 +245,6 @@ export async function sendMessage(
   if (!trimmed) throw new AppError(400, "Message cannot be empty", "EMPTY_MESSAGE");
   if (trimmed.length > 8000) throw new AppError(400, "Message is too long", "MESSAGE_TOO_LONG");
 
-  // Append user message first
   const userMsg: IChatMessage = {
     role: "user",
     content: trimmed,
@@ -265,25 +256,58 @@ export async function sendMessage(
     chat.title = deriveTitle(trimmed);
   }
 
-  // History = everything before the message we just pushed
   const historyBeforeAssistant = chat.messages.slice(0, -1);
 
   let assistantContent: string;
   let errorCode: string | undefined;
 
   try {
-    const systemPrompt = await buildSystemPrompt(tenantId, userRole);
-    assistantContent = await generateAssistantReply(
-      systemPrompt,
-      historyBeforeAssistant,
-      trimmed
-    );
+    // ✅ Use OpenAI agent if enabled (has tool calling + book_appointment tool)
+    if (agentService.isAgentEnabled()) {
+      console.log("[aiService] Using OpenAI agent");
+
+      const agentMessages = historyBeforeAssistant
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
+
+      agentMessages.push({ role: "user", content: trimmed });
+
+      const result = await agentService.runAgentConversation({
+        tenantId,
+        userId,
+        userRole,
+        messages: agentMessages,
+      });
+
+      assistantContent = result.content;
+      console.log("[aiService] Agent tools used:", result.toolsUsed);
+
+      // ✅ Fallback extractor if book_appointment tool wasn't called
+      if (!result.toolsUsed.includes("book_appointment")) {
+        await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
+      }
+
+    } else {
+      // Fallback to Gemini
+      console.log("[aiService] Using Gemini");
+      const systemPrompt = await buildSystemPrompt(tenantId, userRole);
+      assistantContent = await generateAssistantReply(
+        systemPrompt,
+        historyBeforeAssistant,
+        trimmed
+      );
+
+      // ✅ Extract and save appointment from Gemini response
+      await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
+    }
+
   } catch (err) {
-    // Normalize to AppError with proper Gemini classification
     const appErr = err instanceof AppError ? err : classifyGeminiError(err);
     errorCode = appErr.code;
 
-    // Only swallow "expected" AI failures — rethrow auth/DB errors
     const swallowable = new Set([
       "AI_NOT_CONFIGURED",
       "AI_GENERATION_FAILED",
@@ -292,12 +316,11 @@ export async function sendMessage(
       "AI_SAFETY_BLOCK",
       "AI_NETWORK_ERROR",
       "AI_MODEL_NOT_FOUND",
+      "OPENAI_QUOTA_EXCEEDED",
+      "OPENAI_FAILED",
     ]);
 
-    if (!swallowable.has(appErr.code)) {
-      throw appErr;  // e.g. CHAT_NOT_FOUND, DB errors — don't swallow
-    }
-
+    if (!swallowable.has(appErr.code)) throw appErr;
     assistantContent = friendlyUnavailableMessage(errorCode);
   }
 

@@ -19,3 +19,4 @@ export {
   type AvatarPersona,
 } from "./AvatarSettings";
 export { AIMemory, type IAIMemory } from "./AIMemory";
+export { Appointment } from "./Appointment";  // ← add karo
