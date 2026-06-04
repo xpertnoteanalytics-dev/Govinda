@@ -128,7 +128,13 @@ export function AvatarStudio() {
         }
         if (!videoEl) throw new Error("Video element not found after waiting");
 
-        const client = createClient(sessionToken);
+        const client = createClient(sessionToken, {
+          // Disable Anam's built-in LLM — persona only speaks via talk()
+          // This prevents Anam generating its own reply when user speaks.
+          // The ONLY spoken response will be the Gemini reply.
+          disableBrains: true,
+          disableFillerPhrases: true,
+        });
         await client.streamToVideoElement(videoElementId);
 
         setAnamClient(client);
