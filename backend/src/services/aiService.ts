@@ -6,8 +6,8 @@ import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
 import { resolveObjectIdString } from "../utils/resolveId";
 import type { Role } from "../types/roles";
-import * as agentService from "./agent/agentService";
 import { extractAppointmentAndSave } from "./appointmentExtractor";
+import { extractFeedbackAndSave } from "./feedbackExtractor";
 
 const BASE_SYSTEM_PROMPT = `You are Govinda AI, an expert healthcare operations assistant...`;
 
@@ -262,47 +262,20 @@ export async function sendMessage(
   let errorCode: string | undefined;
 
   try {
-    // ✅ Use OpenAI agent if enabled (has tool calling + book_appointment tool)
-    if (agentService.isAgentEnabled()) {
-      console.log("[aiService] Using OpenAI agent");
+    // ✅ Always use Gemini
+    console.log("[aiService] Using Gemini");
+    const systemPrompt = await buildSystemPrompt(tenantId, userRole);
+    assistantContent = await generateAssistantReply(
+      systemPrompt,
+      historyBeforeAssistant,
+      trimmed
+    );
 
-      const agentMessages = historyBeforeAssistant
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
+    // ✅ Save appointment if detected
+    await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
 
-      agentMessages.push({ role: "user", content: trimmed });
-
-      const result = await agentService.runAgentConversation({
-        tenantId,
-        userId,
-        userRole,
-        messages: agentMessages,
-      });
-
-      assistantContent = result.content;
-      console.log("[aiService] Agent tools used:", result.toolsUsed);
-
-      // ✅ Fallback extractor if book_appointment tool wasn't called
-      if (!result.toolsUsed.includes("book_appointment")) {
-        await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
-      }
-
-    } else {
-      // Fallback to Gemini
-      console.log("[aiService] Using Gemini");
-      const systemPrompt = await buildSystemPrompt(tenantId, userRole);
-      assistantContent = await generateAssistantReply(
-        systemPrompt,
-        historyBeforeAssistant,
-        trimmed
-      );
-
-      // ✅ Extract and save appointment from Gemini response
-      await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
-    }
+    // ✅ Save feedback if detected
+    await extractFeedbackAndSave(trimmed, assistantContent, tenantId);
 
   } catch (err) {
     const appErr = err instanceof AppError ? err : classifyGeminiError(err);
@@ -316,8 +289,6 @@ export async function sendMessage(
       "AI_SAFETY_BLOCK",
       "AI_NETWORK_ERROR",
       "AI_MODEL_NOT_FOUND",
-      "OPENAI_QUOTA_EXCEEDED",
-      "OPENAI_FAILED",
     ]);
 
     if (!swallowable.has(appErr.code)) throw appErr;
