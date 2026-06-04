@@ -30,6 +30,11 @@ export interface AvatarSessionResult {
   avatar: AvatarPersonaMeta;
 }
 
+export interface AvatarMessageResult {
+  reply: string;   // text for Anam to speak
+  chatId: string;  // persistent avatar chat id
+}
+
 export async function listPersonas(): Promise<AvatarPersonaMeta[]> {
   const data = await apiFetch<{ personas: AvatarPersonaMeta[] }>(
     "/v1/avatar/personas"
@@ -58,22 +63,15 @@ export async function updateAvatarPersona(
 }
 
 export async function getAvatarSession(): Promise<AvatarSessionResult> {
-  // backendProxy returns the session object directly (not nested),
-  // so the proxy wraps it as { success: true, data: <session> }
-  // and apiFetch unwraps to <session> — no extra .data needed.
   const result = await apiFetch<AvatarSessionResult>(
     "/v1/avatar/session",
     { method: "POST" }
   );
 
-  // ── DEBUG: remove after confirming fix ──────────────────────────────────
   console.log("[avatar-api] getAvatarSession raw result:", result);
   console.log("[avatar-api] sessionToken:", result?.sessionToken ?? result?.token);
   console.log("[avatar-api] mode:", result?.mode);
-  // ────────────────────────────────────────────────────────────────────────
 
-  // Guard: if the backend ever nests under a key, unwrap it gracefully.
-  // This handles both { sessionToken } and { session: { sessionToken } }
   const session = (result as any)?.session ?? result;
 
   if (!session || typeof session !== "object") {
@@ -91,4 +89,22 @@ export async function getAvatarSession(): Promise<AvatarSessionResult> {
     persona:      session.persona,
     avatar:       session.avatar,
   };
+}
+
+/**
+ * Sends a message (typed or voice transcript) through the persistent
+ * avatar chat pipeline: POST /v1/avatar/message
+ *
+ * This hits the same Gemini pipeline as the chat UI, so appointments,
+ * feedback, and all actions fire identically. The chat is persisted in
+ * MongoDB across page reloads — no more lost context.
+ */
+export async function sendAvatarMessage(
+  content: string
+): Promise<AvatarMessageResult> {
+  const data = await apiFetch<AvatarMessageResult>("/v1/avatar/message", {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+  return data;
 }

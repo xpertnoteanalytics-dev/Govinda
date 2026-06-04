@@ -6,9 +6,9 @@ import { createClient } from "@anam-ai/js-sdk";
 import { cn } from "@/lib/utils";
 import {
   getAvatarSettings, getAvatarSession, listPersonas,
-  updateAvatarPersona, type AvatarPersonaId, type AvatarPersonaMeta,
+  updateAvatarPersona, sendAvatarMessage,
+  type AvatarPersonaId, type AvatarPersonaMeta,
 } from "@/lib/avatar-api";
-import { createChat, sendChatMessage } from "@/lib/chat-api";
 import { synthesizeSpeech, playBase64Audio } from "@/lib/voice-api";
 
 type AvatarState = "idle" | "connecting" | "live" | "speaking" | "thinking" | "listening";
@@ -43,12 +43,11 @@ export function AvatarStudio() {
   const [input, setInput]               = useState("");
   const [isTyping, setIsTyping]         = useState(false);
   const [listening, setListening]       = useState(false);
-  const [avatarChatId, setAvatarChatId] = useState<string | null>(null);
   const [anamClient, setAnamClient]     = useState<any>(null);
   const [isStreaming, setIsStreaming]   = useState(false);
-
-  // FIX 3: Track "pending stream" separately so video is visible before SDK attaches
   const [videoVisible, setVideoVisible] = useState(false);
+
+  // ── removed: avatarChatId state — chat persistence is now handled by the backend ──
 
   const anamClientRef  = useRef<any>(null);
   const msgsEndRef     = useRef<HTMLDivElement>(null);
@@ -86,7 +85,6 @@ export function AvatarStudio() {
     };
   }, []);
 
-  // FIX 4: Fully tear down old client and null out refs before reconnecting
   async function teardownAnamClient() {
     try {
       anamClientRef.current?.stopStreaming?.();
@@ -113,8 +111,6 @@ export function AvatarStudio() {
   async function prepareStream() {
     setAvatarState("connecting");
     await teardownAnamClient();
-
-    // FIX 3: Make video visible (opacity, not display:none) BEFORE SDK attaches
     setVideoVisible(true);
 
     try {
@@ -124,7 +120,6 @@ export function AvatarStudio() {
         const sessionToken = data.sessionToken ?? data.token;
         if (!sessionToken) throw new Error("Session token missing");
 
-        // Poll for video element — it should now be visible (not hidden)
         let videoEl: HTMLElement | null = null;
         for (let i = 0; i < 10; i++) {
           videoEl = document.getElementById(videoElementId);
@@ -153,20 +148,24 @@ export function AvatarStudio() {
     }
   }
 
+  /**
+   * THE ONLY CHANGED FUNCTION.
+   *
+   * Before: created a new throwaway chat every page reload via createChat(),
+   *         then called sendChatMessage() on the wrong endpoint.
+   *
+   * After:  calls sendAvatarMessage() → POST /v1/avatar/message
+   *         → same Gemini pipeline → same appointment/feedback extractors.
+   *         The backend manages the persistent avatar chat automatically.
+   *         No chatId needed on the frontend at all.
+   */
   async function askAiAndSpeak(prompt: string) {
     setAvatarState("thinking");
     setIsTyping(true);
     try {
-      let chatId = avatarChatId;
-      if (!chatId) {
-        const chat = await createChat("Avatar Voice Session");
-        chatId = chat.id;
-        setAvatarChatId(chat.id);
-      }
-      const result = await sendChatMessage(chatId, prompt);
-      const reply =
-        result.assistantMessage?.content ||
-        result.chat.messages.filter((m: any) => m.role === "assistant").at(-1)?.content || "";
+      // ✅ Single call to the avatar pipeline — no chatId management needed
+      const result = await sendAvatarMessage(prompt);
+      const reply = result.reply;
 
       if (!reply) { setAvatarState("idle"); setIsTyping(false); return; }
 
@@ -222,7 +221,7 @@ export function AvatarStudio() {
     rec.onresult = (e: any) => {
       const spoken = e.results[0][0].transcript;
       addMessage("user", spoken);
-      void askAiAndSpeak(spoken);
+      void askAiAndSpeak(spoken);  // ✅ voice → same pipeline as typed text
       setListening(false);
     };
     rec.onerror = () => { setListening(false); setAvatarState("idle"); };
@@ -237,7 +236,7 @@ export function AvatarStudio() {
     if (!text || avatarState === "thinking" || avatarState === "speaking") return;
     setInput("");
     addMessage("user", text);
-    void askAiAndSpeak(text);
+    void askAiAndSpeak(text);  // ✅ typed text → same pipeline as voice
   }
 
   const state   = stateConfig[avatarState];
@@ -262,12 +261,6 @@ export function AvatarStudio() {
           className="flex-1 relative overflow-hidden flex items-end"
           style={{ background: selected === "govinda" ? "#0a0f1e" : "#0f0a1e" }}
         >
-          {/*
-            FIX 3: Use opacity/pointer-events instead of `hidden` (display:none).
-            The Anam SDK needs the <video> element to be in the layout tree when
-            streamToVideoElement() is called. `hidden` removes it from layout;
-            opacity-0 keeps it mounted and measurable.
-          */}
           <video
             id={videoElementId}
             autoPlay
