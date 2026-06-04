@@ -1,33 +1,13 @@
 ﻿import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
-import { AvatarSettings } from "../models";
+import { AvatarSettings, Chat } from "../models";
 import { resolveObjectIdString } from "../utils/resolveId";
 import { AVATAR_PERSONAS, type AvatarPersonaId } from "../types/avatars";
 import type { AvatarPersona } from "../models/AvatarSettings";
+import * as aiService from "./aiService";
+import type { Role } from "../types/roles";
 
-export type AvatarRuntimeMode = "anam" | "static";
-
-export interface AvatarSessionResult {
-  mode: AvatarRuntimeMode;
-  sessionId: string | null;
-  sessionToken: string | null;
-  token: string | null;
-  expiresAt?: string;
-  streamUrl?: string;
-  reason?: string;
-}
-
-function maskSecret(value: string): string {
-  if (!value) return "(empty)";
-  if (value.length <= 8) return `${value.slice(0, 2)}***`;
-  return `${value.slice(0, 4)}***${value.slice(-4)}`;
-}
-
-function toDebugMessage(err: unknown): string {
-  if (err instanceof AppError) return `${err.code ?? "APP_ERROR"}: ${err.message}`;
-  if (err instanceof Error) return err.message;
-  return "Unknown provider error";
-}
+// ─── Avatar Settings ──────────────────────────────────────────────────────────
 
 export async function getAvatarSettings(tenantId: string, userId: string) {
   let settings = await AvatarSettings.findOne({
@@ -61,7 +41,9 @@ export async function updateAvatarSettings(
     },
     {
       ...(updates.persona ? { persona: updates.persona } : {}),
-      ...(updates.elevenLabsVoiceId ? { elevenLabsVoiceId: updates.elevenLabsVoiceId } : {}),
+      ...(updates.elevenLabsVoiceId
+        ? { elevenLabsVoiceId: updates.elevenLabsVoiceId }
+        : {}),
     },
     { upsert: true, new: true }
   );
@@ -71,6 +53,32 @@ export async function updateAvatarSettings(
 
 export function listAvatarPersonas() {
   return Object.values(AVATAR_PERSONAS);
+}
+
+// ─── Avatar Provider Helpers ──────────────────────────────────────────────────
+
+export type AvatarRuntimeMode = "anam" | "static";
+
+export interface AvatarSessionResult {
+  mode: AvatarRuntimeMode;
+  sessionId: string | null;
+  sessionToken: string | null;
+  token: string | null;
+  expiresAt?: string;
+  streamUrl?: string;
+  reason?: string;
+}
+
+function maskSecret(value: string): string {
+  if (!value) return "(empty)";
+  if (value.length <= 8) return `${value.slice(0, 2)}***`;
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
+
+function toDebugMessage(err: unknown): string {
+  if (err instanceof AppError) return `${err.code ?? "APP_ERROR"}: ${err.message}`;
+  if (err instanceof Error) return err.message;
+  return "Unknown provider error";
 }
 
 interface AvatarProvider {
@@ -93,38 +101,83 @@ class AnamAvatarProvider implements AvatarProvider {
   private resolveAgentId(persona: AvatarPersonaId): string {
     const id = env.anam.agentIds[persona];
     if (!id) {
-      throw new AppError(503, `Missing Anam agent id for ${persona}.`, "ANAM_AGENT_NOT_CONFIGURED");
+      throw new AppError(
+        503,
+        `Missing Anam agent id for ${persona}.`,
+        "ANAM_AGENT_NOT_CONFIGURED"
+      );
     }
     return id;
   }
 
   async createSession(persona: AvatarPersonaId): Promise<AvatarSessionResult> {
     if (!env.anam.apiKey) {
-      throw new AppError(503, "Avatar service is not configured. Set ANAM_API_KEY.", "ANAM_NOT_CONFIGURED");
+      throw new AppError(
+        503,
+        "Avatar service is not configured. Set ANAM_API_KEY.",
+        "ANAM_NOT_CONFIGURED"
+      );
     }
     const agentId = this.resolveAgentId(persona);
     const endpoint = "https://api.anam.ai/v1/auth/session-token";
-    console.log("[anam] creating session", { endpoint, persona, agentId, apiKeyMasked: maskSecret(env.anam.apiKey) });
+    console.log("[anam] creating session", {
+      endpoint,
+      persona,
+      agentId,
+      apiKeyMasked: maskSecret(env.anam.apiKey),
+    });
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.anam.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ personaId: agentId, clientLabel: `govinda-ai-${persona}` }),
+      headers: {
+        Authorization: `Bearer ${env.anam.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        personaId: agentId,
+        clientLabel: `govinda-ai-${persona}`,
+      }),
     });
     const rawBody = await res.text();
     let data: {
-      id?: string; session_id?: string; token?: string; sessionToken?: string;
-      stream_url?: string; expires_at?: string;
+      id?: string;
+      session_id?: string;
+      token?: string;
+      sessionToken?: string;
+      stream_url?: string;
+      expires_at?: string;
       data?: { sessionToken?: string; token?: string; expiresAt?: string };
-      error?: { message?: string }; message?: string;
+      error?: { message?: string };
+      message?: string;
     } = {};
-    try { data = JSON.parse(rawBody) as typeof data; } catch { data = {}; }
-    console.log("[anam] session response", { status: res.status, ok: res.ok, body: rawBody || "(empty)" });
-    if (!res.ok) {
-      throw new AppError(502, data.error?.message ?? data.message ?? "Failed to create Anam session", "ANAM_SESSION_FAILED");
+    try {
+      data = JSON.parse(rawBody) as typeof data;
+    } catch {
+      data = {};
     }
-    const sessionToken = data.sessionToken ?? data.token ?? data.data?.sessionToken ?? data.data?.token ?? null;
+    console.log("[anam] session response", {
+      status: res.status,
+      ok: res.ok,
+      body: rawBody || "(empty)",
+    });
+    if (!res.ok) {
+      throw new AppError(
+        502,
+        data.error?.message ?? data.message ?? "Failed to create Anam session",
+        "ANAM_SESSION_FAILED"
+      );
+    }
+    const sessionToken =
+      data.sessionToken ??
+      data.token ??
+      data.data?.sessionToken ??
+      data.data?.token ??
+      null;
     if (!sessionToken) {
-      throw new AppError(502, "Anam session token missing in response", "ANAM_TOKEN_MISSING");
+      throw new AppError(
+        502,
+        "Anam session token missing in response",
+        "ANAM_TOKEN_MISSING"
+      );
     }
     return {
       mode: "anam",
@@ -137,7 +190,9 @@ class AnamAvatarProvider implements AvatarProvider {
   }
 }
 
-export async function createAvatarSession(persona: AvatarPersonaId): Promise<AvatarSessionResult> {
+export async function createAvatarSession(
+  persona: AvatarPersonaId
+): Promise<AvatarSessionResult> {
   const anam = new AnamAvatarProvider();
   const fallback = new StaticAvatarProvider();
   try {
@@ -151,4 +206,82 @@ export async function createAvatarSession(persona: AvatarPersonaId): Promise<Ava
     }
     return fallbackSession;
   }
+}
+
+// ─── Avatar ↔ Gemini Bridge ───────────────────────────────────────────────────
+
+const AVATAR_CHAT_TITLE = "Anam Avatar";
+
+/**
+ * Returns the single persistent avatar Chat for this user+tenant.
+ * Auto-creates it on the first call — no manual setup needed.
+ */
+export async function getOrCreateAvatarChat(
+  tenantId: string,
+  userId: string
+): Promise<string> {
+  const tenantOid = resolveObjectIdString(tenantId, "tenantId");
+  const userOid = resolveObjectIdString(userId, "userId");
+
+  const existing = await Chat.findOne({
+    tenantId: tenantOid,
+    userId: userOid,
+    avatarChat: true,
+  });
+
+  if (existing) {
+    return existing._id.toString();
+  }
+
+  const created = await Chat.create({
+    tenantId: tenantOid,
+    userId: userOid,
+    title: AVATAR_CHAT_TITLE,
+    avatarChat: true,
+    messages: [],
+  });
+
+  console.log("[avatar] created persistent avatar chat", created._id.toString());
+  return created._id.toString();
+}
+
+/**
+ * Processes a voice message from Anam Avatar through the SAME Gemini
+ * pipeline used by the chat UI.
+ *
+ * Flow:
+ *   Anam Avatar → processAvatarMessage
+ *               → aiService.sendMessage          (same as chat UI)
+ *               → Gemini
+ *               → extractAppointmentAndSave      (same as chat UI)
+ *               → extractFeedbackAndSave         (same as chat UI)
+ *
+ * @param tenantId  - tenant context
+ * @param userId    - authenticated user
+ * @param userRole  - role for system prompt customisation
+ * @param content   - transcribed speech text from Anam
+ */
+export async function processAvatarMessage(
+  tenantId: string,
+  userId: string,
+  userRole: Role,
+  content: string
+): Promise<{ reply: string; chatId: string }> {
+  // 1. Get (or auto-create) the persistent avatar chat
+  const chatId = await getOrCreateAvatarChat(tenantId, userId);
+
+  // 2. Run through the exact same Gemini pipeline as the chat UI.
+  //    Appointments, feedback, and all side-effects fire here automatically.
+  const result = await aiService.sendMessage(
+    chatId,
+    tenantId,
+    userId,
+    userRole,
+    content
+  );
+
+  return {
+    reply: result.assistantMessage.content,
+    chatId,
+  };
 }

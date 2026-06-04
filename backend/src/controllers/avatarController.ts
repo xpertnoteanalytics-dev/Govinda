@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import * as avatarService from "../services/avatarService";
 import { createAvatarSession } from "../services/avatarProvider";
 import type { AvatarPersona } from "../models/AvatarSettings";
+import type { Role } from "../types/roles";
 
 export async function personas(
   _req: Request,
@@ -73,3 +74,42 @@ export async function session(
 }
 
 export const streamingToken = session;
+
+/**
+ * POST /api/avatar/message
+ *
+ * Receives transcribed speech from Anam Avatar, routes it through
+ * the same Gemini pipeline used by the chat UI, and returns the
+ * AI reply text for Anam to speak aloud.
+ *
+ * Body:    { content: string }
+ * Returns: { success: true, data: { reply: string, chatId: string } }
+ */
+export async function message(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const content: string = (req.body.content ?? "").trim();
+
+    if (!content) {
+      res.status(400).json({
+        success: false,
+        error: { message: "content is required" },
+      });
+      return;
+    }
+
+    const result = await avatarService.processAvatarMessage(
+      req.tenantId!,
+      req.user!.id,
+      req.user!.role as Role,
+      content
+    );
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}

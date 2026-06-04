@@ -12,6 +12,7 @@ export interface IChat extends Document {
   tenantId: Types.ObjectId;
   userId: Types.ObjectId;
   title: string;
+  avatarChat: boolean;
   messages: IChatMessage[];
   createdAt: Date;
   updatedAt: Date;
@@ -56,6 +57,11 @@ const chatSchema = new Schema<IChat>(
       default: "New conversation",
       trim: true,
       maxlength: 200,
+    },
+    avatarChat: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     messages: {
       type: [chatMessageSchema],
