@@ -159,7 +159,9 @@ export default function HomePage() {
                 desc: "AI parses unstructured text to extract patient name, requested service, date, and time variables.",
                 extra: (
                   <div className="mt-3 p-3 rounded-lg bg-slate-900 border border-slate-800 font-mono text-[11px] text-slate-400">
-                    <span className="text-emerald-400">"Blood test tomorrow 5 PM"</span>
+                   <span className="text-emerald-400">
+                      &quot;Blood test tomorrow 5 PM&quot;
+                    </span>
                     <div className="mt-1.5 grid grid-cols-2 gap-x-2 text-[10px] text-slate-500">
                       <div>• Service: Blood Test</div>
                       <div>• Time: 5:00 PM</div>
