@@ -135,6 +135,13 @@ class AnamAvatarProvider implements AvatarProvider {
       body: JSON.stringify({
         personaId: agentId,
         clientLabel: `govinda-ai-${persona}`,
+        // Disable Anam's built-in LLM brain so the persona ONLY speaks
+        // when we explicitly call client.talk(). Without this, Anam
+        // generates its own reply when the user speaks — causing double responses.
+        // CUSTOMER_CLIENT_V1 = 'I am bringing my own LLM (Gemini)'
+        personaConfig: {
+          llmId: 'CUSTOMER_CLIENT_V1',
+        },
       }),
     });
     const rawBody = await res.text();
