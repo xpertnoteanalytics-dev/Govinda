@@ -27,10 +27,27 @@ const CATEGORIES: {
   id: PlaceCategory;
   icon: typeof Cross;
 }[] = [
+  // Healthcare
   { id: "pharmacy", icon: Cross },
   { id: "hospital", icon: Building2 },
-  { id: "ngo", icon: HeartHandshake },
   { id: "polyclinic", icon: Stethoscope },
+  { id: "clinic", icon: Stethoscope },
+  { id: "diagnostic_center", icon: Building2 },
+  { id: "medical_lab", icon: Building2 },
+  { id: "blood_bank", icon: HeartHandshake },
+
+  // Education
+  { id: "school", icon: Building2 },
+  { id: "college", icon: Building2 },
+  { id: "university", icon: Building2 },
+
+  // Community
+  { id: "ngo", icon: HeartHandshake },
+  { id: "community_center", icon: Building2 },
+
+  // Offices
+  { id: "government_office", icon: Building2 },
+  { id: "corporate_office", icon: Building2 },
 ];
 
 const RADIUS_MIN = 500;
@@ -372,8 +389,10 @@ export function PlacesSearch() {
                   Find healthcare services nearby
                 </h3>
                 <p className="mt-2 max-w-md text-sm text-ink-muted">
-                  Search pharmacies, hospitals, NGOs, and polyclinics by city or your current
-                  location. Results include ratings, hours, and directions.
+                  Search hospitals, pharmacies, clinics, diagnostic centers, medical labs,
+blood banks, schools, colleges, universities, NGOs, government offices,
+community centers, and other nearby services using your city or current
+location. Results include ratings, contact information, hours, and directions.  
                 </p>
               </motion.div>
             )}

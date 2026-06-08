@@ -3,6 +3,20 @@ export const PLACE_CATEGORIES = {
   hospital: "hospital",
   ngo: "ngo",
   polyclinic: "polyclinic",
+
+  clinic: "clinic",
+  diagnostic_center: "diagnostic_center",
+  medical_lab: "medical_lab",
+  blood_bank: "blood_bank",
+
+  school: "school",
+  college: "college",
+  university: "university",
+
+  community_center: "community_center",
+  government_office: "government_office",
+  corporate_office: "corporate_office",
+
 } as const;
 
 export type PlaceCategory = keyof typeof PLACE_CATEGORIES;

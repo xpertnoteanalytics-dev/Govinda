@@ -23,6 +23,19 @@ const CATEGORY_CONFIG: Record<PlaceCategory, CategoryConfig> = {
   hospital: { type: "hospital" },
   ngo: { keyword: "NGO nonprofit health" },
   polyclinic: { keyword: "polyclinic medical clinic", type: "doctor" },
+
+  clinic: { keyword: "clinic", type: "doctor" },
+  diagnostic_center: { keyword: "diagnostic center pathology lab" },
+  medical_lab: { keyword: "medical laboratory pathology lab" },
+  blood_bank: { keyword: "blood bank" },
+
+  school: { keyword: "school" },
+  college: { keyword: "college" },
+  university: { keyword: "university" },
+
+  government_office: { keyword: "government office" },
+  community_center: { keyword: "community center" },
+  corporate_office: { keyword: "corporate office" },
 };
 
 function getApiKey(): string {

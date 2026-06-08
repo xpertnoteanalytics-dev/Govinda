@@ -17,7 +17,7 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
       function: {
         name: "search_healthcare_places",
         description:
-          "Search nearby pharmacies, hospitals, NGOs, or polyclinics using Google Maps.",
+          "Search hospitals, pharmacies, clinics, diagnostic centers, medical labs, blood banks, schools, colleges, universities, NGOs, government offices, and other nearby services using your city or current location.",
         parameters: {
           type: "object",
           properties: {
