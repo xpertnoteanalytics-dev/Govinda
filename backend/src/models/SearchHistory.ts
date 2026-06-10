@@ -1,3 +1,4 @@
+// src/models/SearchHistory.ts
 import mongoose, { Schema, Document, Model, Types } from "mongoose";
 import type { PlaceCategory } from "../types/places";
 
@@ -32,7 +33,22 @@ const searchHistorySchema = new Schema<ISearchHistory>(
     },
     category: {
       type: String,
-      enum: ["pharmacy", "hospital", "ngo", "polyclinic"],
+      enum: [
+        "pharmacy",
+        "hospital",
+        "ngo",
+        "polyclinic",
+        "clinic",
+        "diagnostic_center",
+        "medical_lab",
+        "blood_bank",
+        "school",
+        "college",
+        "university",
+        "community_center",
+        "government_office",
+        "corporate_office",
+      ],
       required: true,
     },
     city: { type: String, trim: true },
