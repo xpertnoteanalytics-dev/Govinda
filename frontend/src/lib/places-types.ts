@@ -146,3 +146,20 @@ export const CATEGORY_META: Record<
     color: "bg-zinc-50 text-zinc-800 ring-zinc-200",
   },
 };
+// src/lib/places-types.ts — add at the bottom after CATEGORY_META
+export const ALL_PLACE_CATEGORIES: PlaceCategory[] = [
+  "pharmacy",
+  "hospital",
+  "ngo",
+  "polyclinic",
+  "clinic",
+  "diagnostic_center",
+  "medical_lab",
+  "blood_bank",
+  "school",
+  "college",
+  "university",
+  "community_center",
+  "government_office",
+  "corporate_office",
+];

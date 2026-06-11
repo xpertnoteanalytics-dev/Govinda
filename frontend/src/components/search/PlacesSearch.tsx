@@ -1,3 +1,4 @@
+// src/components/search/PlacesSearch.tsx
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -13,21 +14,22 @@ import {
   LocateFixed,
   Menu,
   X,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PlaceCategory, PlaceResult, SearchHistoryEntry } from "@/lib/places-types";
 import { CATEGORY_META } from "@/lib/places-types";
-import { searchPlaces, listSearchHistory } from "@/lib/places-api";
+import { searchPlaces, listSearchHistory, listImportedPlaces, type ImportedPlace } from "@/lib/places-api";
 import { HEALTHCARE_WORKFLOW_STEPS } from "@/lib/workflow-steps";
 import { WorkflowRibbon } from "@/components/ui/WorkflowRibbon";
 import { PlaceCard } from "./PlaceCard";
 import { SearchHistorySidebar } from "./SearchHistorySidebar";
+import CsvImportModal from "./CsvImportModal";
 
 const CATEGORIES: {
   id: PlaceCategory;
   icon: typeof Cross;
 }[] = [
-  // Healthcare
   { id: "pharmacy", icon: Cross },
   { id: "hospital", icon: Building2 },
   { id: "polyclinic", icon: Stethoscope },
@@ -35,17 +37,11 @@ const CATEGORIES: {
   { id: "diagnostic_center", icon: Building2 },
   { id: "medical_lab", icon: Building2 },
   { id: "blood_bank", icon: HeartHandshake },
-
-  // Education
   { id: "school", icon: Building2 },
   { id: "college", icon: Building2 },
   { id: "university", icon: Building2 },
-
-  // Community
   { id: "ngo", icon: HeartHandshake },
   { id: "community_center", icon: Building2 },
-
-  // Offices
   { id: "government_office", icon: Building2 },
   { id: "corporate_office", icon: Building2 },
 ];
@@ -53,6 +49,7 @@ const CATEGORIES: {
 const RADIUS_MIN = 500;
 const RADIUS_MAX = 50000;
 const RADIUS_DEFAULT = 5000;
+
 export function PlacesSearch() {
   const [category, setCategory] = useState<PlaceCategory>("pharmacy");
   const [radius, setRadius] = useState(RADIUS_DEFAULT);
@@ -70,6 +67,8 @@ export function PlacesSearch() {
   const [error, setError] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importedPlaces, setImportedPlaces] = useState<ImportedPlace[]>([]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -80,20 +79,28 @@ export function PlacesSearch() {
     }
   }, []);
 
+  const loadImported = useCallback(async () => {
+    try {
+      const data = await listImportedPlaces();
+      setImportedPlaces(data);
+    } catch {
+      setImportedPlaces([]);
+    }
+  }, []);
+
   useEffect(() => {
     loadHistory();
-  }, [loadHistory]);
+    loadImported();
+  }, [loadHistory, loadImported]);
 
   async function useCurrentLocation() {
     setError("");
     setIsLocating(true);
-
     if (!navigator.geolocation) {
       setError("Geolocation is not supported in this browser");
       setIsLocating(false);
       return;
     }
-
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setLocation({
@@ -128,8 +135,8 @@ export function PlacesSearch() {
     const searchRadius = overrides?.radius ?? radius;
 
     try {
-      let lat = overrides?.lat ?? location?.lat;
-      let lng = overrides?.lng ?? location?.lng;
+      const lat = overrides?.lat ?? location?.lat;
+      const lng = overrides?.lng ?? location?.lng;
       const searchCity = overrides?.city ?? (city.trim() || undefined);
       const label =
         overrides?.locationLabel ??
@@ -282,6 +289,16 @@ export function PlacesSearch() {
                 )}
                 Search
               </button>
+
+              {/* ✅ Import CSV Button */}
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-ink hover:bg-slate-50 dark:border-white/10 dark:bg-slate-800 dark:text-white dark:hover:bg-slate-700"
+              >
+                <Upload className="h-4 w-4" />
+                Import CSV
+              </button>
             </div>
 
             {location && (
@@ -313,9 +330,7 @@ export function PlacesSearch() {
             <div>
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span className="font-medium text-ink dark:text-white">Search radius</span>
-                <span className="text-ink-muted">
-                  {(radius / 1000).toFixed(1)} km
-                </span>
+                <span className="text-ink-muted">{(radius / 1000).toFixed(1)} km</span>
               </div>
               <input
                 type="range"
@@ -331,6 +346,14 @@ export function PlacesSearch() {
                 <span>50 km</span>
               </div>
             </div>
+
+            {/* ✅ Imported places count badge */}
+            {importedPlaces.length > 0 && (
+              <p className="flex items-center gap-1.5 text-xs text-ink-muted">
+                <Upload className="h-3.5 w-3.5 text-brand-600" />
+                {importedPlaces.length} imported places in your database
+              </p>
+            )}
           </div>
         </div>
 
@@ -390,10 +413,15 @@ export function PlacesSearch() {
                 </h3>
                 <p className="mt-2 max-w-md text-sm text-ink-muted">
                   Search hospitals, pharmacies, clinics, diagnostic centers, medical labs,
-blood banks, schools, colleges, universities, NGOs, government offices,
-community centers, and other nearby services using your city or current
-location. Results include ratings, contact information, hours, and directions.  
+                  blood banks, schools, colleges, universities, NGOs, government offices,
+                  community centers, and other nearby services using your city or current
+                  location. Results include ratings, contact information, hours, and directions.
                 </p>
+                {importedPlaces.length > 0 && (
+                  <p className="mt-3 text-xs text-brand-600 dark:text-brand-400">
+                    {importedPlaces.length} places already imported in your database
+                  </p>
+                )}
               </motion.div>
             )}
 
@@ -411,6 +439,16 @@ location. Results include ratings, contact information, hours, and directions.
           </div>
         </div>
       </div>
+
+      {/* ✅ CSV Import Modal */}
+      {showImport && (
+        <CsvImportModal
+          onClose={() => setShowImport(false)}
+          onImported={async () => {
+            await loadImported();
+          }}
+        />
+      )}
     </div>
   );
 }

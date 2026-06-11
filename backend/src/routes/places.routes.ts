@@ -1,3 +1,4 @@
+// src/routes/places.routes.ts
 import { Router } from "express";
 import { body } from "express-validator";
 import { validate } from "../middleware/validate";
@@ -9,21 +10,10 @@ const router = Router();
 router.post(
   "/search",
   validate([
-    body("category")
-      .isIn(ALL_PLACE_CATEGORIES)
-      .withMessage("Invalid place category"),
-    body("radius")
-      .optional()
-      .isInt({ min: 500, max: 50000 })
-      .withMessage("Radius must be between 500m and 50km"),
-    body("lat")
-      .optional()
-      .isFloat({ min: -90, max: 90 })
-      .withMessage("Invalid latitude"),
-    body("lng")
-      .optional()
-      .isFloat({ min: -180, max: 180 })
-      .withMessage("Invalid longitude"),
+    body("category").isIn(ALL_PLACE_CATEGORIES).withMessage("Invalid place category"),
+    body("radius").optional().isInt({ min: 500, max: 50000 }),
+    body("lat").optional().isFloat({ min: -90, max: 90 }),
+    body("lng").optional().isFloat({ min: -180, max: 180 }),
     body("city").optional().isString().trim().isLength({ max: 120 }),
     body("locationLabel").optional().isString().trim().isLength({ max: 200 }),
     body("lat").custom((_value, { req }) => {
@@ -39,7 +29,21 @@ router.post(
 router.get("/history", placesController.history);
 router.get("/analytics", placesController.analytics);
 router.delete("/history/:historyId", placesController.removeHistory);
-
 router.get("/details/:placeId", placesController.getDetails);
+
+// ─── CSV Import ───────────────────────────────────────────────────────────────
+router.post(
+  "/import",
+  validate([
+    body("records").isArray({ min: 1 }).withMessage("Records array required"),
+    body("records.*.name").notEmpty().withMessage("Name is required"),
+    body("records.*.category").isIn(ALL_PLACE_CATEGORIES).withMessage("Invalid category"),
+    body("records.*.lat").isFloat({ min: -90, max: 90 }).withMessage("Invalid latitude"),
+    body("records.*.lng").isFloat({ min: -180, max: 180 }).withMessage("Invalid longitude"),
+  ]),
+  placesController.importCsv
+);
+
+router.get("/imported", placesController.listImported);
 
 export default router;
