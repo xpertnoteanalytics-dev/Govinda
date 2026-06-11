@@ -15,6 +15,7 @@ import {
   Menu,
   X,
   Upload,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PlaceCategory, PlaceResult, SearchHistoryEntry } from "@/lib/places-types";
@@ -194,6 +195,50 @@ export function PlacesSearch() {
     });
   }
 
+  // ✅ Export results to CSV
+  function exportResultsToCsv() {
+    if (!results.length) return;
+
+    const headers = [
+      "Name",
+      "Category",
+      "Phone",
+      "Address",
+      "Rating",
+      "Distance (m)",
+      "Latitude",
+      "Longitude",
+      "Open Status",
+      "Website",
+      "Maps URL",
+    ];
+
+    const rows = results.map((p) => [
+      `"${p.name.replace(/"/g, '""')}"`,
+      p.category,
+      p.phone ?? "",
+      `"${(p.address ?? "").replace(/"/g, '""')}"`,
+      p.rating ?? "",
+      p.distanceMeters ?? "",
+      p.lat,
+      p.lng,
+      p.openStatusText ?? (p.isOpen == null ? "" : p.isOpen ? "Open" : "Closed"),
+      p.website ?? "",
+      p.mapsUrl,
+    ]);
+
+    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${category}-${locationLabel || "results"}-${new Date().toISOString().split("T")[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="flex h-[calc(100vh-4rem)] min-h-0 flex-1 overflow-hidden lg:h-full">
       <button
@@ -246,8 +291,9 @@ export function PlacesSearch() {
           <div className="mx-auto max-w-4xl space-y-4">
             <WorkflowRibbon steps={HEALTHCARE_WORKFLOW_STEPS} activeIndex={0} />
 
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <div className="relative flex-1">
+            <div className="flex flex-wrap gap-3">
+              {/* City input */}
+              <div className="relative flex-1 min-w-[200px]">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-subtle" />
                 <input
                   type="text"
@@ -263,6 +309,8 @@ export function PlacesSearch() {
                   className="h-11 w-full rounded-xl border border-slate-200/80 bg-slate-50/80 pl-10 pr-4 text-sm text-ink outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 dark:border-white/10 dark:bg-slate-950/50 dark:text-white"
                 />
               </div>
+
+              {/* Current location */}
               <button
                 type="button"
                 onClick={useCurrentLocation}
@@ -276,6 +324,8 @@ export function PlacesSearch() {
                 )}
                 Current location
               </button>
+
+              {/* Search */}
               <button
                 type="button"
                 onClick={() => runSearch()}
@@ -290,7 +340,7 @@ export function PlacesSearch() {
                 Search
               </button>
 
-              {/* ✅ Import CSV Button */}
+              {/* Import CSV */}
               <button
                 type="button"
                 onClick={() => setShowImport(true)}
@@ -299,6 +349,18 @@ export function PlacesSearch() {
                 <Upload className="h-4 w-4" />
                 Import CSV
               </button>
+
+              {/* ✅ Export CSV — only visible after search results */}
+              {results.length > 0 && (
+                <button
+                  type="button"
+                  onClick={exportResultsToCsv}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400 dark:hover:bg-emerald-500/20"
+                >
+                  <Download className="h-4 w-4" />
+                  Export CSV ({results.length})
+                </button>
+              )}
             </div>
 
             {location && (
@@ -347,7 +409,6 @@ export function PlacesSearch() {
               </div>
             </div>
 
-            {/* ✅ Imported places count badge */}
             {importedPlaces.length > 0 && (
               <p className="flex items-center gap-1.5 text-xs text-ink-muted">
                 <Upload className="h-3.5 w-3.5 text-brand-600" />
@@ -427,10 +488,20 @@ export function PlacesSearch() {
 
             {!isSearching && results.length > 0 && (
               <div className="space-y-4">
-                <p className="text-sm text-ink-muted">
-                  {results.length} {CATEGORY_META[category].plural.toLowerCase()} near{" "}
-                  <span className="font-medium text-ink">{locationLabel}</span>
-                </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-ink-muted">
+                    {results.length} {CATEGORY_META[category].plural.toLowerCase()} near{" "}
+                    <span className="font-medium text-ink">{locationLabel}</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={exportResultsToCsv}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Export CSV
+                  </button>
+                </div>
                 {results.map((place, index) => (
                   <PlaceCard key={place.placeId} place={place} index={index} />
                 ))}
@@ -440,7 +511,6 @@ export function PlacesSearch() {
         </div>
       </div>
 
-      {/* ✅ CSV Import Modal */}
       {showImport && (
         <CsvImportModal
           onClose={() => setShowImport(false)}
