@@ -17,27 +17,34 @@ export interface CreateFeedbackPayload {
   source?: string;
 }
 
-// src/lib/feedback-api.ts
+// ── shape the Express backend actually returns ──────────────────
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+}
 
 export async function fetchFeedback(): Promise<Feedback[]> {
-  const res = await apiFetch<{ success: boolean; data: Feedback[] }>("/v1/feedback");
-  return res.data;
+  const res = await apiFetch<ApiResponse<Feedback[]>>("/v1/feedback");
+  return res.data ?? [];                         // ✅ unwrap + safe fallback
 }
 
 export async function createFeedback(payload: CreateFeedbackPayload): Promise<Feedback> {
-  const res = await apiFetch<{ success: boolean; data: Feedback }>("/v1/feedback", {
+  const res = await apiFetch<ApiResponse<Feedback>>("/v1/feedback", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return res.data;
+  return res.data;                               // ✅ unwrap
 }
 
 export function computeStats(list: Feedback[]) {
-  const total = list.length;
-  const positive = list.filter((f) => f.sentiment === "positive").length;
-  const negative = list.filter((f) => f.sentiment === "negative").length;
-  const neutral  = list.filter((f) => f.sentiment === "neutral").length;
+  const safe  = list ?? [];                      // ✅ never undefined
+  const total = safe.length;
+
+  const positive = safe.filter((f) => f.sentiment === "positive").length;
+  const negative = safe.filter((f) => f.sentiment === "negative").length;
+  const neutral  = safe.filter((f) => f.sentiment === "neutral").length;
+
   const positivePercent   = total ? Math.round((positive / total) * 100) : 0;
   const negativePercent   = total ? Math.round((negative / total) * 100) : 0;
   const neutralPercent    = total ? Math.round((neutral  / total) * 100) : 0;
@@ -46,7 +53,7 @@ export function computeStats(list: Feedback[]) {
     : 0;
 
   const trendMap: Record<string, { positive: number; negative: number; neutral: number }> = {};
-  list.forEach((f) => {
+  safe.forEach((f) => {
     const date = new Date(f.createdAt).toLocaleDateString("en-IN", {
       day: "numeric", month: "short",
     });
@@ -58,7 +65,7 @@ export function computeStats(list: Feedback[]) {
     .slice(-7)
     .map(([date, counts]) => ({ date, ...counts }));
 
-  const concerns = list
+  const concerns = safe
     .filter((f) => f.sentiment === "negative" && f.feedback)
     .slice(0, 5)
     .map((f) => f.feedback.slice(0, 80));
