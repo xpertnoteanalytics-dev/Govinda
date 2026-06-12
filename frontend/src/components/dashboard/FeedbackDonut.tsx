@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getOperationsOverview } from "@/lib/operations-api";
+import { fetchFeedback, computeStats } from "@/lib/feedback-api";
 import { AnimatedCard } from "@/components/ui/motion";
 import { CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 
-interface DonutSegment {
+interface Segment {
   label: string;
   value: number;
   percent: number;
@@ -13,29 +13,22 @@ interface DonutSegment {
   emoji: string;
 }
 
-function SentimentDonut({
-  segments,
-  total,
-}: {
-  segments: DonutSegment[];
-  total: number;
-}) {
+function SentimentDonut({ segments, total }: { segments: Segment[]; total: number }) {
   const R = 52;
   const CX = 70;
   const CY = 70;
   const circumference = 2 * Math.PI * R;
-  const strokeWidth = 14;
   let cumPercent = 0;
 
   return (
     <div className="flex items-center gap-4">
       <div className="relative shrink-0">
-        <svg width={140} height={140} viewBox="0 0 140 140" aria-label="Feedback sentiment donut">
+        <svg width={140} height={140} viewBox="0 0 140 140" aria-label="Feedback sentiment donut chart">
           <circle
             cx={CX} cy={CY} r={R}
             fill="none"
             stroke="currentColor"
-            strokeWidth={strokeWidth}
+            strokeWidth={14}
             className="text-slate-100 dark:text-slate-800"
           />
           {segments.map((seg, i) => {
@@ -49,7 +42,7 @@ function SentimentDonut({
                 cx={CX} cy={CY} r={R}
                 fill="none"
                 stroke={seg.color}
-                strokeWidth={strokeWidth}
+                strokeWidth={14}
                 strokeDasharray={`${dash} ${gap}`}
                 strokeDashoffset={offset}
                 strokeLinecap="round"
@@ -59,12 +52,11 @@ function SentimentDonut({
           })}
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-xl font-bold text-ink dark:text-white">
-            {total.toLocaleString()}
-          </span>
+          <span className="text-xl font-bold text-ink dark:text-white">{total}</span>
           <span className="text-[10px] text-ink-muted dark:text-slate-400">Total</span>
         </div>
       </div>
+
       <ul className="space-y-2.5">
         {segments.map((seg) => (
           <li key={seg.label} className="flex items-center justify-between gap-6">
@@ -84,25 +76,41 @@ function SentimentDonut({
 }
 
 export function FeedbackDonut() {
-  const [total, setTotal] = useState<number | null>(null);
+  const [segments, setSegments] = useState<Segment[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    getOperationsOverview()
-      .then((o) => setTotal(o.ai.conversations))
+    fetchFeedback()
+      .then((data) => {
+        const stats = computeStats(data);
+        setTotal(stats.total);
+        setSegments([
+          {
+            label: "Positive",
+            value: stats.positive,
+            percent: stats.positivePercent,
+            color: "#10b981",
+            emoji: "😊",
+          },
+          {
+            label: "Neutral",
+            value: stats.neutral,
+            percent: stats.neutralPercent,
+            color: "#f59e0b",
+            emoji: "😐",
+          },
+          {
+            label: "Negative",
+            value: stats.negative,
+            percent: stats.negativePercent,
+            color: "#ef4444",
+            emoji: "😞",
+          },
+        ].filter((s) => s.value > 0));
+      })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed"));
   }, []);
-
-  const buildSegments = (t: number): DonutSegment[] => {
-    const pos = Math.round(t * 0.72);
-    const neu = Math.round(t * 0.18);
-    const neg = t - pos - neu;
-    return [
-      { label: "Positive", value: pos, percent: 72, color: "#10b981", emoji: "😊" },
-      { label: "Neutral", value: neu, percent: 18, color: "#f59e0b", emoji: "😐" },
-      { label: "Negative", value: Math.max(0, neg), percent: 10, color: "#ef4444", emoji: "😞" },
-    ];
-  };
 
   return (
     <AnimatedCard index={3} className="h-full">
@@ -113,10 +121,12 @@ export function FeedbackDonut() {
       <div className="mt-4">
         {error ? (
           <p className="text-sm text-clinical-danger">{error}</p>
-        ) : total === null ? (
+        ) : segments === null ? (
           <div className="h-36 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+        ) : total === 0 ? (
+          <p className="text-sm text-ink-muted dark:text-slate-400">No feedback yet.</p>
         ) : (
-          <SentimentDonut segments={buildSegments(total)} total={total} />
+          <SentimentDonut segments={segments} total={total} />
         )}
       </div>
     </AnimatedCard>
