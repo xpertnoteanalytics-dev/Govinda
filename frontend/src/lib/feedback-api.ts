@@ -17,16 +17,20 @@ export interface CreateFeedbackPayload {
   source?: string;
 }
 
+// src/lib/feedback-api.ts
+
 export async function fetchFeedback(): Promise<Feedback[]> {
-  return apiFetch<Feedback[]>("/v1/feedback");
+  const res = await apiFetch<{ success: boolean; data: Feedback[] }>("/v1/feedback");
+  return res.data;
 }
 
 export async function createFeedback(payload: CreateFeedbackPayload): Promise<Feedback> {
-  return apiFetch<Feedback>("/v1/feedback", {
+  const res = await apiFetch<{ success: boolean; data: Feedback }>("/v1/feedback", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  return res.data;
 }
 
 export function computeStats(list: Feedback[]) {
