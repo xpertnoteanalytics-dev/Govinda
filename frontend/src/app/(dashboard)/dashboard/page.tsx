@@ -45,23 +45,6 @@ export default function DashboardPage() {
           <GeoCoverage />
         </div>
 
-        {/* Admin only */}
-        <RoleGuard minRole={ROLES.TENANT_ADMIN}>
-          <AnimatedCard index={8}>
-            <CardHeader className="p-0">
-              <CardTitle>Admin Controls</CardTitle>
-              <CardDescription>
-                Organization administration features for tenant admins
-              </CardDescription>
-            </CardHeader>
-            <ul className="mt-4 space-y-2 text-sm text-ink-muted dark:text-slate-400">
-              <li>• Invite and manage team members</li>
-              <li>• Configure organization settings</li>
-              <li>• View audit logs and compliance reports</li>
-            </ul>
-          </AnimatedCard>
-        </RoleGuard>
-
       </div>
     </PageTransition>
   );

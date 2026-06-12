@@ -82,6 +82,27 @@ export function formatDistance(meters?: number): string {
   return `${(meters / 1000).toFixed(1)} km`;
 }
 
+// ✅ Fixed: handles quoted fields with commas inside
+function splitCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 export function parseCsv(text: string): CsvRecord[] {
   const lines = text.trim().split("\n");
   if (lines.length < 2) return [];
@@ -98,15 +119,16 @@ export function parseCsv(text: string): CsvRecord[] {
     throw new Error("CSV must have columns: Name, Category, Latitude, Longitude");
   }
 
-  return lines.slice(1)
+  return lines
+    .slice(1)
     .filter((l) => l.trim())
     .map((line) => {
-      const cols = line.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+      const cols = splitCsvLine(line);
       return {
         name: cols[nameIdx] ?? "",
         category: cols[catIdx]?.toLowerCase() ?? "",
-        phone: phoneIdx !== -1 ? cols[phoneIdx] : undefined,
-        address: addrIdx !== -1 ? cols[addrIdx] : undefined,
+        phone: phoneIdx !== -1 ? (cols[phoneIdx] || undefined) : undefined,
+        address: addrIdx !== -1 ? (cols[addrIdx] || undefined) : undefined,
         lat: cols[latIdx] ?? "",
         lng: cols[lngIdx] ?? "",
       };
