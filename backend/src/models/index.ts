@@ -21,3 +21,7 @@ export {
 export { AIMemory, type IAIMemory } from "./AIMemory";
 export { Appointment } from "./Appointment";  // ← add karo
 export { Feedback } from "./Feedback";  // ← add karo
+export { ImportedPlace } from "./ImportedPlace";
+export { Stakeholder, type IStakeholder, type StakeholderType } from "./Stakeholder";
+export { StakeholderInteraction, type IStakeholderInteraction } from "./StakeholderInteraction";
+export { StakeholderImport, type IStakeholderImport } from "./StakeholderImport";

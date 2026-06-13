@@ -18,6 +18,7 @@ import {
   Send,
   Star,
   MessagesSquare,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { APP_NAME, ROLES } from "@/lib/constants";
@@ -31,6 +32,7 @@ const navItems = [
   { href: "/dashboard/avatar", label: "Govinda & Durga", icon: UserCircle2 },
   { href: "/dashboard/calls", label: "Calls", icon: Phone },
   { href: "/dashboard/outreach", label: "Outreach", icon: Send },
+  { href: "/dashboard/stakeholders", label: "Stakeholders", icon: User },
   { href: "/dashboard/appointments", label: "Appointments", icon: Activity },
   { href: "/dashboard/feedback", label: "Feedbacks", icon: MessagesSquare },
   { href: "/dashboard/profile", label: "Profile", icon: UserCircle },

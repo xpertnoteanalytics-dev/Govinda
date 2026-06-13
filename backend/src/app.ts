@@ -1,3 +1,4 @@
+// src/app.ts
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -7,6 +8,7 @@ import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import appointmentRoutes from "./routes/appointments";
 import feedbackRoutes from "./routes/feedback";
+import stakeholderRoutes from "./routes/stakeholder.routes";
 
 export function createApp() {
   const app = express();
@@ -24,7 +26,8 @@ export function createApp() {
 
   app.use("/api", routes);
   app.use("/api/v1/appointments", appointmentRoutes);
-app.use("/api/v1/feedback", feedbackRoutes);
+  app.use("/api/v1/feedback", feedbackRoutes);
+  app.use("/api/v1/stakeholders", stakeholderRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
