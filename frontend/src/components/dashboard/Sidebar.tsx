@@ -124,53 +124,28 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           </button>
         </div>
 
-        {/* ── ORGANIZATION LOGO (DYNAMIC — changes per logged-in org) ─────────
-            Shows the organization's own uploaded logo next to their name.
-            Falls back to a coloured initial avatar when no logo is set.
-            Sourced from user.tenant.logo which is stored on the Tenant model.
-        ─────────────────────────────────────────────────────────────────────── */}
+        {/* ── ORG LOGO + USER INFO (single compact block) ────────────────── */}
         {user && (
-          <div className="shrink-0 border-b border-slate-200/80 px-4 py-4 bg-slate-50/40 dark:bg-slate-900/10">
-
-            {/* Organization row — dynamic org logo + org name */}
-            <div className="flex items-center gap-2.5 mb-3">
+          <div className="shrink-0 border-b border-slate-200/80 dark:border-slate-800/60 px-4 py-3">
+            <div className="flex items-center gap-3">
+              {/* Org logo or initial avatar */}
               {user.tenant.logo ? (
-                // ✅ Uploaded org logo
                 <img
                   src={user.tenant.logo}
                   alt={user.tenant.name}
-                  className="h-8 w-8 rounded-lg object-cover ring-1 ring-black/5 dark:ring-white/10 shrink-0"
+                  className="h-9 w-9 rounded-lg object-cover shrink-0 ring-1 ring-black/5 dark:ring-white/10"
                 />
               ) : (
-                // ✅ Fallback: first letter of org name in brand gradient
-                <div
-                  className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-bold shrink-0"
-                  aria-label={`${user.tenant.name} logo placeholder`}
-                >
+                <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-sm font-bold shrink-0">
                   {user.tenant.name.charAt(0).toUpperCase()}
                 </div>
               )}
-
-              <div className="min-w-0">
-                <p className="truncate text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                  Organization
-                </p>
-                <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
+              {/* Org name + user name + role in one column */}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-bold text-slate-800 dark:text-slate-100 leading-tight">
                   {user.tenant.name}
                 </p>
-              </div>
-            </div>
-
-            {/* Divider */}
-            <div className="border-t border-slate-200/60 dark:border-white/10 mb-3" />
-
-            {/* User row — initials avatar + name + role badge */}
-            <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                {user.firstName.charAt(0)}{user.lastName.charAt(0)}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                <p className="truncate text-[11px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">
                   {user.firstName} {user.lastName}
                 </p>
                 <div className="mt-1">
