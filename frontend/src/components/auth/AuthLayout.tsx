@@ -5,9 +5,8 @@ import Image from "next/image";
 function BrandLogo({ isMobile = false }) {
   return (
     <Link href="/" className="flex items-center gap-3.5 group cursor-pointer">
-      <div className={`relative flex items-center justify-center rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 overflow-hidden transition-all duration-500 group-hover:scale-105 shadow-md group-hover:shadow-emerald-500/20
-        ${isMobile ? "h-11 w-11" : "h-12 w-12 sm:h-14 sm:w-14"}`}
-      >
+      <div>
+      <img src="/govinda.png" alt="Govinda AI" className={`object-contain rounded-xl transition-transform duration-300 group-hover:scale-105 ${isMobile ? "h-11 w-11" : "h-12 w-12 sm:h-14 sm:w-14"}`} />
        
       </div>
 

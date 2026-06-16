@@ -18,11 +18,8 @@ function BrandLogo({ isFooter = false }: { isFooter?: boolean }) {
   return (
     <Link href="/" className="flex items-center gap-3 group cursor-pointer">
       {/* Dark-themed brand mark — matches navy UI */}
-      <div
-        className={`flex items-center justify-center rounded-2xl bg-[#1a1f2e] border border-slate-700/60 text-emerald-400 font-extrabold shadow-inner group-hover:border-emerald-500/40 transition-all duration-300
-          ${isFooter ? "h-9 w-9 text-base" : "h-12 w-12 sm:h-14 sm:w-14 text-xl sm:text-2xl"}`}
-      >
-        G
+      <div>
+       <img src="/govinda.png" alt="Govinda AI" className={`object-contain rounded-xl ${isFooter ? "h-9 w-9" : "h-12 w-12 sm:h-14 sm:w-14"}`} />
       </div>
 
       <div className="flex flex-col">
