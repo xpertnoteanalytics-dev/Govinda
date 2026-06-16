@@ -7,10 +7,10 @@ import { AppError } from "../utils/AppError";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET!;
+const JWT_SECRET = (process.env.JWT_ACCESS_SECRET ?? process.env.JWT_SECRET)!;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET!;
-const ACCESS_TTL = "15m";
-const REFRESH_TTL = "7d";
+const ACCESS_TTL = process.env.JWT_ACCESS_EXPIRES_IN ?? "15m";
+const REFRESH_TTL = process.env.JWT_REFRESH_EXPIRES_IN ?? "7d";
 
 // ── Wire shape returned to clients ────────────────────────────────────────────
 
