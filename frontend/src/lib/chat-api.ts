@@ -24,12 +24,12 @@ export interface SendMessageResult {
 }
 
 export async function listChats(): Promise<ChatMeta[]> {
-  const res = await apiFetch<{ chats: ChatMeta[] }>("/ai/chats");
+  const res = await apiFetch<{ chats: ChatMeta[] }>("/v1/ai/chats");
   return res.chats;
 }
 
 export async function createChat(title?: string): Promise<ChatMeta> {
-  const res = await apiFetch<{ chat: ChatMeta }>("/ai/chats", {
+  const res = await apiFetch<{ chat: ChatMeta }>("/v1/ai/chats", {
     method: "POST",
     body: JSON.stringify({ title }),
   });
@@ -37,24 +37,25 @@ export async function createChat(title?: string): Promise<ChatMeta> {
 }
 
 export async function getChat(chatId: string): Promise<Chat> {
-  const res = await apiFetch<{ chat: Chat }>(`/ai/chats/${chatId}`);
+  const res = await apiFetch<{ chat: Chat }>(`/v1/ai/chats/${chatId}`);
   return res.chat;
 }
 
 export async function deleteChat(chatId: string): Promise<void> {
-  await apiFetch(`/ai/chats/${chatId}`, { method: "DELETE" });
+  await apiFetch(`/v1/ai/chats/${chatId}`, { method: "DELETE" });
 }
 
 export async function sendMessage(
   chatId: string,
   content: string
 ): Promise<SendMessageResult> {
-  const res = await apiFetch<{ chat: Chat; userMessage: ChatMessage; assistantMessage: ChatMessage }>(
-    `/ai/chats/${chatId}/messages`,
-    {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    }
-  );
+  const res = await apiFetch<{
+    chat: Chat;
+    userMessage: ChatMessage;
+    assistantMessage: ChatMessage;
+  }>(`/v1/ai/chats/${chatId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
   return res;
 }
