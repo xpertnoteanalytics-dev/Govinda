@@ -20,7 +20,7 @@ function BrandLogo({ isMobile = false }) {
         <span className={`font-semibold tracking-widest text-emerald-600 dark:text-emerald-400 uppercase mt-1
           ${isMobile ? "text-[9px]" : "text-[10px] sm:text-[11px]"}`}
         >
-          By RKJ Labs
+          By Xpertnote Analytics
         </span>
       </div>
     </Link>
@@ -122,7 +122,7 @@ export function AuthLayout({
           </div>
 
           <p className="text-xs font-semibold text-slate-400 opacity-0 anim-fade-up delay-300">
-            &copy; {new Date().getFullYear()} Govinda AI. Powered by RKJ Labs.
+            &copy; {new Date().getFullYear()} Govinda AI. Powered by Xpertnote Analytics.
           </p>
         </aside>
 

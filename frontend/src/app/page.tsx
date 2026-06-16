@@ -36,7 +36,7 @@ function BrandLogo({ isFooter = false }: { isFooter?: boolean }) {
           className={`font-bold tracking-widest text-emerald-400 uppercase mt-0.5
             ${isFooter ? "text-[9px]" : "text-[10px] sm:text-[11px]"}`}
         >
-          By RKJ Labs
+          By Xpertnote Analytics
         </span>
       </div>
     </Link>
@@ -81,12 +81,6 @@ export default function HomePage() {
       {/* Main content */}
       <main className="flex-grow mx-auto max-w-7xl px-4 pb-24 pt-20 sm:px-6 lg:px-8 lg:pt-28">
         <div className="mx-auto max-w-4xl text-center flex flex-col items-center">
-
-          {/* Badge */}
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-1.5 text-xs sm:text-sm font-medium text-emerald-400 backdrop-blur-sm">
-            <Shield className="h-3.5 w-3.5" />
-            <span>Operational Intelligence Platform</span>
-          </div>
 
           {/* Headline */}
           <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl leading-[1.12] text-white">
@@ -258,7 +252,7 @@ export default function HomePage() {
             <span>&copy; {new Date().getFullYear()} Govinda AI. All rights reserved.</span>
             <span>
               Engineered & Powered by{" "}
-              <span className="font-bold text-slate-300">RKJ Labs</span>
+              <span className="font-bold text-slate-300">Xpertnote Analytics</span>
             </span>
           </div>
         </div>

@@ -1,3 +1,4 @@
+// src/routes/protected.routes.ts
 import { Router } from "express";
 import { body } from "express-validator";
 import { authenticate } from "../middleware/auth";
@@ -6,7 +7,7 @@ import { requireMinRole } from "../middleware/role";
 import { validate } from "../middleware/validate";
 import { ROLES } from "../types/roles";
 import * as dashboardController from "../controllers/dashboardController";
-import * as profileController from "../controllers/profileController";
+import * as profileController from "../controllers/profileController"; // ← sirf ek baar
 import aiRoutes from "./ai.routes";
 import placesRoutes from "./places.routes";
 import callsRoutes from "./calls.routes";
@@ -52,36 +53,24 @@ router.use("/operations", operationsRoutes);
 router.get("/analytics", dashboardController.analytics);
 
 router.get("/profile", profileController.getProfile);
-
 router.patch(
   "/profile",
   validate([
-    body("firstName")
-      .optional()
-      .trim()
-      .notEmpty()
-      .withMessage("First name cannot be empty"),
-    body("lastName")
-      .optional()
-      .trim()
-      .notEmpty()
-      .withMessage("Last name cannot be empty"),
+    body("firstName").optional().trim().notEmpty().withMessage("First name cannot be empty"),
+    body("lastName").optional().trim().notEmpty().withMessage("Last name cannot be empty"),
   ]),
   profileController.updateProfile
 );
 
-router.get(
-  "/admin",
-  requireMinRole(ROLES.TENANT_ADMIN),
-  (req, res) => {
-    res.json({
-      success: true,
-      data: {
-        message: "Tenant admin area",
-        role: req.user?.role,
-      },
-    });
-  }
-);
+// ✅ Organization routes
+router.get("/organization", profileController.getOrganization);
+router.patch("/organization", profileController.updateOrganization);
+
+router.get("/admin", requireMinRole(ROLES.TENANT_ADMIN), (req, res) => {
+  res.json({
+    success: true,
+    data: { message: "Tenant admin area", role: req.user?.role },
+  });
+});
 
 export default router;

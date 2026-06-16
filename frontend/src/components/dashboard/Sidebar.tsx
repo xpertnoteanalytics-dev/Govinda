@@ -124,19 +124,52 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
 
         {/* Dynamic User Summary Profile Block */}
-        {user && (
-          <div className="shrink-0 border-b border-slate-200/80 px-5 py-4 bg-slate-50/40 dark:bg-slate-900/10 backdrop-blur-sm">
-            <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
-              {user.firstName} {user.lastName}
-            </p>
-            <p className="truncate text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
-              {user.tenant?.name || "Global Space"}
-            </p>
-            <div className="mt-2.5 inline-block">
-              <RoleBadge role={user.role} />
-            </div>
-          </div>
-        )}
+{user && (
+  <div className="shrink-0 border-b border-slate-200/80 px-4 py-4 bg-slate-50/40 dark:bg-slate-900/10">
+    
+    {/* Organization row — logo + org name */}
+    <div className="flex items-center gap-2.5 mb-3">
+      {user.tenant.logo ? (
+        <img
+          src={user.tenant.logo}
+          alt={user.tenant.name}
+          className="h-8 w-8 rounded-lg object-cover ring-1 ring-white/10 shrink-0"
+        />
+      ) : (
+        <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-bold shrink-0">
+          {user.tenant.name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="min-w-0">
+        <p className="truncate text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+          Organization
+        </p>
+        <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
+          {user.tenant.name}
+        </p>
+      </div>
+    </div>
+
+    {/* Divider */}
+    <div className="border-t border-slate-200/60 dark:border-white/10 mb-3" />
+
+    {/* User row — name + role badge */}
+    <div className="flex items-center gap-2.5">
+      <div className="h-8 w-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+        {user.firstName.charAt(0)}{user.lastName.charAt(0)}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+          {user.firstName} {user.lastName}
+        </p>
+        <div className="mt-1">
+          <RoleBadge role={user.role} />
+        </div>
+      </div>
+    </div>
+
+  </div>
+)}
 
         {/* Primary Navigation Hub (The only container configured to handle scrolling inside the panel) */}
         <nav className="flex-1 space-y-1.5 px-3 py-4 overflow-x-hidden overflow-y-auto custom-scrollbar">

@@ -53,6 +53,7 @@ export interface AuthUserResponse {
     name: string;
     slug: string;
     plan: string;
+    logo?: string; // ← add
   };
 }
 
@@ -196,9 +197,9 @@ function formatAuthUser(
     firstName: string;
     lastName: string;
     role: string;
-    tenantId: { toString(): string } | { _id: { toString(): string }; name: string; slug: string; plan: string };
+    tenantId: { toString(): string } | { _id: { toString(): string }; name: string; slug: string; plan: string; logo?: string };
   },
-  tenant: { _id?: { toString(): string }; name: string; slug: string; plan: string; toString?: () => string }
+  tenant: { _id?: { toString(): string }; name: string; slug: string; plan: string; logo?: string; toString?: () => string }
 ): AuthUserResponse {
   const tenantId =
     tenant._id?.toString() ??
@@ -218,15 +219,16 @@ function formatAuthUser(
       name: tenant.name,
       slug: tenant.slug,
       plan: tenant.plan,
+      logo: tenant.logo ?? undefined, // ← add
     },
   };
 }
 
 export async function getCurrentUser(userId: string): Promise<AuthUserResponse> {
   const user = await User.findById(userId).populate(
-    "tenantId",
-    "name slug plan isActive"
-  );
+  "tenantId",
+  "name slug plan isActive logo" // ← add logo
+);
 
   if (!user || !user.isActive) {
     throw new AppError(404, "User not found", "USER_NOT_FOUND");

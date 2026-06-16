@@ -17,6 +17,7 @@ export interface AuthUser {
     name: string;
     slug: string;
     plan: string;
+    logo?: string; // ← add
   };
 }
 
