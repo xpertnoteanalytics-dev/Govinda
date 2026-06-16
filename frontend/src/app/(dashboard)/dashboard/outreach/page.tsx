@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Mail, MessageCircle, Phone,
-  Loader2, LayoutGrid, Send,
+  Loader2, LayoutGrid, Send, Filter,
 } from "lucide-react";
 import { listEmails } from "@/lib/emails-api";
 import { listWhatsAppMessages } from "@/lib/whatsapp-api";
@@ -15,6 +15,8 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { cn } from "@/lib/utils";
 
 type Tab = "all" | "email" | "whatsapp" | "call";
+
+const CATEGORIES = ["All","College","Hospital","NGO","Government","Sponsor","Partner","Corporate","School","Community Organization","Other"];
 
 const accentColors: Record<string, string> = {
   email:    "#378ADD",
@@ -29,11 +31,12 @@ const sourceLabel: Record<string, { icon: React.ElementType; label: string; colo
 };
 
 export default function OutreachPage() {
-  const [tab, setTab]         = useState<Tab>("all");
-  const [loading, setLoading] = useState(true);
-  const [emails, setEmails]   = useState<Awaited<ReturnType<typeof listEmails>>>([]);
+  const [tab, setTab]           = useState<Tab>("all");
+  const [category, setCategory] = useState("All");
+  const [loading, setLoading]   = useState(true);
+  const [emails, setEmails]     = useState<Awaited<ReturnType<typeof listEmails>>>([]);
   const [messages, setMessages] = useState<Awaited<ReturnType<typeof listWhatsAppMessages>>>([]);
-  const [calls, setCalls]     = useState<Awaited<ReturnType<typeof listCalls>>>([]);
+  const [calls, setCalls]       = useState<Awaited<ReturnType<typeof listCalls>>>([]);
 
   useEffect(() => {
     Promise.all([listEmails(), listWhatsAppMessages(), listCalls()])
@@ -42,7 +45,13 @@ export default function OutreachPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const totalActivities = emails.length + messages.length + calls.length;
+  const filterCat = <T extends { category?: string }>(arr: T[]) =>
+    category === "All" ? arr : arr.filter(r => r.category === category);
+
+  const filteredEmails   = filterCat(emails);
+  const filteredMessages = filterCat(messages);
+  const filteredCalls    = filterCat(calls);
+  const totalActivities  = emails.length + messages.length + calls.length;
 
   const tabs = [
     { id: "all" as Tab,      label: "All",      icon: LayoutGrid },
@@ -52,10 +61,10 @@ export default function OutreachPage() {
   ];
 
   function ActivityCard({
-    type, name, sub, meta, status, index,
+    type, name, sub, meta, status, category: cat, index,
   }: {
     type: "email" | "whatsapp" | "call";
-    name: string; sub: string; meta: string; status: string; index: number;
+    name: string; sub: string; meta: string; status: string; category?: string; index: number;
   }) {
     const src = sourceLabel[type];
     const Icon = src.icon;
@@ -74,6 +83,11 @@ export default function OutreachPage() {
           <div className="min-w-0">
             <p className={cn("text-xs font-medium uppercase tracking-wide flex items-center gap-1.5 mb-1", src.color)}>
               <Icon className="w-3.5 h-3.5" /> {src.label}
+              {cat && (
+                <span className="ml-2 text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground normal-case tracking-normal">
+                  {cat}
+                </span>
+              )}
             </p>
             <p className="font-medium text-[15px] truncate">{name}</p>
             <p className="text-sm text-muted-foreground truncate">{sub}</p>
@@ -105,9 +119,9 @@ export default function OutreachPage() {
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "Total activity", value: totalActivities,  hint: "Calls + WhatsApp + Emails" },
-          { label: "Emails",         value: emails.length,    hint: "Outbound emails sent" },
-          { label: "WhatsApp + calls", value: messages.length + calls.length, hint: "Direct contact" },
+          { label: "Total activity",    value: totalActivities,               hint: "Calls + WhatsApp + Emails" },
+          { label: "Emails",            value: emails.length,                 hint: "Outbound emails sent" },
+          { label: "WhatsApp + calls",  value: messages.length + calls.length, hint: "Direct contact" },
         ].map((s) => (
           <div key={s.label} className="bg-muted/50 rounded-lg p-4 border border-border/50">
             <p className="text-xs text-muted-foreground mb-1">{s.label}</p>
@@ -117,8 +131,8 @@ export default function OutreachPage() {
         ))}
       </div>
 
-      {/* Tabs */}
-      <div className="flex flex-wrap gap-2">
+      {/* Tabs + Category filter */}
+      <div className="flex flex-wrap items-center gap-2">
         {tabs.map((t) => {
           const Icon = t.icon;
           return (
@@ -136,6 +150,17 @@ export default function OutreachPage() {
             </button>
           );
         })}
+
+        <div className="flex items-center gap-1.5 ml-auto">
+          <Filter className="w-3.5 h-3.5 text-muted-foreground" />
+          <select
+            value={category}
+            onChange={e => setCategory(e.target.value)}
+            className="text-sm border border-border rounded-full px-3 py-1.5 bg-background text-foreground"
+          >
+            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
       </div>
 
       {/* Activity list */}
@@ -145,34 +170,37 @@ export default function OutreachPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {(tab === "all" || tab === "email") && emails.map((row, i) => (
+          {(tab === "all" || tab === "email") && filteredEmails.map((row, i) => (
             <ActivityCard key={row.id} type="email" index={i}
               name={row.placeName}
+              category={row.category}
               sub={`${row.toEmail} · ${row.subject}`}
               meta={`${new Date(row.createdAt).toLocaleString()}${row.initiatedBy?.name ? ` · ${row.initiatedBy.name}` : ""}`}
               status={row.status} />
           ))}
 
-          {(tab === "all" || tab === "whatsapp") && messages.map((row, i) => (
+          {(tab === "all" || tab === "whatsapp") && filteredMessages.map((row, i) => (
             <ActivityCard key={row.id} type="whatsapp" index={i}
               name={row.placeName}
+              category={row.category}
               sub={`${row.phoneNumber} · ${row.message}`}
               meta={`${new Date(row.createdAt).toLocaleString()}${row.deliveryStatus ? ` · ${row.deliveryStatus}` : ""}`}
               status={row.status} />
           ))}
 
-          {(tab === "all" || tab === "call") && calls.map((row, i) => (
+          {(tab === "all" || tab === "call") && filteredCalls.map((row, i) => (
             <ActivityCard key={row.id} type="call" index={i}
               name={row.placeName}
+              category={(row as any).category}
               sub={row.phoneNumber}
               meta={new Date(row.createdAt).toLocaleString()}
               status={row.status} />
           ))}
 
-          {((tab === "email" && emails.length === 0) ||
-            (tab === "whatsapp" && messages.length === 0) ||
-            (tab === "call" && calls.length === 0) ||
-            (tab === "all" && totalActivities === 0)) && (
+          {((tab === "email" && filteredEmails.length === 0) ||
+            (tab === "whatsapp" && filteredMessages.length === 0) ||
+            (tab === "call" && filteredCalls.length === 0) ||
+            (tab === "all" && filteredEmails.length + filteredMessages.length + filteredCalls.length === 0)) && (
             <div className="text-center py-16 text-muted-foreground text-sm border border-dashed border-border rounded-xl">
               No outreach activity yet. Start from Find Care.
             </div>
