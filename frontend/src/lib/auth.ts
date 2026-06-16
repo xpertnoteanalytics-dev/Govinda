@@ -1,3 +1,12 @@
+// src/lib/auth.ts
+//
+// Canonical AuthUser type. Shared by client components, server components,
+// cookie parsing, and AuthProvider.
+//
+// TWO LOGOS — never confuse them:
+//   1. Govinda AI logo  → static SVG/icon in sidebar header. Never stored here.
+//   2. Organization logo → tenant.logo below. Dynamic per org. Null when unset.
+
 import {
   AUTH_COOKIE_ACCESS,
   AUTH_COOKIE_REFRESH,
@@ -17,7 +26,12 @@ export interface AuthUser {
     name: string;
     slug: string;
     plan: string;
-    logo?: string; // ← add
+    /**
+     * The organization's OWN uploaded logo (base64 data-URL or CDN URL).
+     * Undefined / absent when no logo has been set.
+     * Components should guard: `user.tenant.logo ? <img> : <fallback>`
+     */
+    logo?: string;
   };
 }
 

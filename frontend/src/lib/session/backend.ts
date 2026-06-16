@@ -1,3 +1,8 @@
+// frontend/src/lib/session/backend.ts
+//
+// Server-side helpers that call the Express backend directly.
+// These run in Next.js Route Handlers (app/api/**) — never in the browser.
+
 import { API_URL } from "@/lib/constants";
 import type { AuthUser } from "@/lib/auth";
 
@@ -55,16 +60,27 @@ export async function backendLogin(credentials: {
   });
 }
 
+// ── backendSignup ─────────────────────────────────────────────────────────────
+//
+// organizationLogo is optional — a base64 data-URL the user may upload during
+// the signup form. It must be forwarded to Express so registerUser() can
+// persist it on the Tenant document at creation time.
+//
+// Without this field in the body, the logo is silently dropped and the org
+// is created with logo: null even when the user uploaded one.
+
 export async function backendSignup(input: {
   email: string;
   password: string;
   firstName: string;
   lastName: string;
   organizationName: string;
+  /** Optional base64 data-URL for the organization logo (max 2 MB). */
+  organizationLogo?: string;
 }): Promise<AuthPayload> {
   return backendFetch<AuthPayload>("/auth/signup", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify(input), // organizationLogo included when present
   });
 }
 
@@ -88,7 +104,9 @@ export async function backendLogout(accessToken: string) {
   });
 }
 
-export async function backendGetMe(accessToken: string): Promise<{ user: AuthUser }> {
+export async function backendGetMe(
+  accessToken: string
+): Promise<{ user: AuthUser }> {
   const res = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });

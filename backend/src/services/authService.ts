@@ -1,44 +1,25 @@
+// src/services/authService.ts
+
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
-import { Tenant, User } from "../models";
-import { ROLES } from "../types/roles";
+import jwt from "jsonwebtoken";
+import { User, Tenant } from "../models";
 import { AppError } from "../utils/AppError";
-import {
-  signAccessToken,
-  signRefreshToken,
-  verifyRefreshToken,
-} from "../utils/jwt";
-import { resolveObjectIdString } from "../utils/resolveId";
 
-const SALT_ROUNDS = 12;
+// ── Env ───────────────────────────────────────────────────────────────────────
 
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-}
+const JWT_SECRET = process.env.JWT_SECRET!;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET!;
+const ACCESS_TTL = "15m";
+const REFRESH_TTL = "7d";
 
-async function uniqueSlug(base: string): Promise<string> {
-  let slug = slugify(base);
-  let suffix = 0;
+// ── Wire shape returned to clients ────────────────────────────────────────────
 
-  while (await Tenant.exists({ slug })) {
-    suffix += 1;
-    slug = `${slugify(base)}-${suffix}`;
-  }
-
-  return slug;
-}
-
-function hashRefreshToken(token: string): string {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
-
-export interface AuthTokens {
-  accessToken: string;
-  refreshToken: string;
+export interface TenantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  logo: string | null;
 }
 
 export interface AuthUserResponse {
@@ -48,198 +29,236 @@ export interface AuthUserResponse {
   lastName: string;
   role: string;
   tenantId: string;
-  tenant: {
-    id: string;
-    name: string;
-    slug: string;
-    plan: string;
-    logo?: string; // ← add
-  };
+  tenant: TenantSummary;
 }
 
-export async function registerUser(input: {
-  email: string;
-  password: string;
-  firstName: string;
-  lastName: string;
-  organizationName: string;
-}): Promise<{ user: AuthUserResponse; tokens: AuthTokens }> {
-  const existing = await User.findOne({ email: input.email });
-  if (existing) {
-    throw new AppError(409, "An account with this email already exists", "EMAIL_EXISTS");
-  }
+interface TokenPair {
+  accessToken: string;
+  refreshToken: string;
+}
 
-  const slug = await uniqueSlug(input.organizationName);
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-  const tenant = await Tenant.create({
-    name: input.organizationName,
-    slug,
-    plan: "free",
-  });
-
-  const hashedPassword = await bcrypt.hash(input.password, SALT_ROUNDS);
-
-  const user = await User.create({
-    email: input.email,
-    password: hashedPassword,
-    firstName: input.firstName,
-    lastName: input.lastName,
-    role: ROLES.TENANT_ADMIN,
-    tenantId: tenant._id,
-  });
-
-  const tokens = await issueTokens(user);
+function issueTokens(userId: string, tenantId: string): TokenPair {
+  const payload = { sub: userId, tenantId };
   return {
-    user: formatAuthUser(user, tenant),
-    tokens,
+    accessToken: jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_TTL }),
+    refreshToken: jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: REFRESH_TTL }),
   };
 }
 
-export async function loginUser(input: {
-  email: string;
-  password: string;
-}): Promise<{ user: AuthUserResponse; tokens: AuthTokens }> {
-  const user = await User.findOne({ email: input.email })
-    .select("+password +refreshTokenHash")
-    .populate<{ tenantId: { _id: unknown; name: string; slug: string; plan: string } }>(
-      "tenantId",
-      "name slug plan isActive"
-    );
+/**
+ * Derives a URL-safe slug from an org name.
+ * No external utility needed — keeps authService self-contained.
+ * Example: "RKG Labs Inc." → "rkg-labs-inc"
+ */
+async function buildUniqueSlug(name: string): Promise<string> {
+  const base = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")   // non-alphanumeric runs → dash
+    .replace(/^-+|-+$/g, "");       // trim leading/trailing dashes
 
-  if (!user || !user.isActive) {
-    throw new AppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
+  // Check for collisions and append a numeric suffix if needed
+  let slug = base;
+  let suffix = 1;
+  while (await Tenant.exists({ slug })) {
+    slug = `${base}-${suffix}`;
+    suffix++;
   }
-
-  const tenant = user.tenantId as unknown as {
-    _id: { toString(): string };
-    name: string;
-    slug: string;
-    plan: string;
-    isActive?: boolean;
-  };
-
-  if (tenant && "isActive" in tenant && tenant.isActive === false) {
-    throw new AppError(403, "Organization account is suspended", "TENANT_SUSPENDED");
-  }
-
-  const passwordMatch = await bcrypt.compare(input.password, user.password);
-  if (!passwordMatch) {
-    throw new AppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
-  }
-
-  user.lastLoginAt = new Date();
-  const tokens = await issueTokens(user);
-  await user.save();
-
-  return {
-    user: formatAuthUser(user, tenant),
-    tokens,
-  };
+  return slug;
 }
 
-export async function refreshAccessToken(
-  refreshToken: string
-): Promise<AuthTokens> {
-  let payload;
-  try {
-    payload = verifyRefreshToken(refreshToken);
-  } catch {
-    throw new AppError(401, "Invalid refresh token", "INVALID_REFRESH_TOKEN");
-  }
-
-  const user = await User.findById(payload.sub).select("+refreshTokenHash");
-  if (!user || !user.isActive || !user.refreshTokenHash) {
-    throw new AppError(401, "Invalid refresh token", "INVALID_REFRESH_TOKEN");
-  }
-
-  const tokenHash = hashRefreshToken(refreshToken);
-  if (tokenHash !== user.refreshTokenHash) {
-    throw new AppError(401, "Refresh token revoked", "REFRESH_TOKEN_REVOKED");
-  }
-
-  return issueTokens(user);
-}
-
-export async function logoutUser(userId: string): Promise<void> {
-  await User.findByIdAndUpdate(userId, { $unset: { refreshTokenHash: 1 } });
-}
-
-async function issueTokens(user: {
+type PopulatedTenant = {
   _id: { toString(): string };
-  email: string;
-  role: string;
-  tenantId: unknown;
-}): Promise<AuthTokens> {
-  const tenantId = resolveObjectIdString(user.tenantId, "tenantId");
+  name: string;
+  slug: string;
+  plan: string;
+  isActive?: boolean;
+  logo?: string | null;
+};
 
-  const accessToken = signAccessToken({
-    sub: user._id.toString(),
-    email: user.email,
-    role: user.role as import("../types/roles").Role,
-    tenantId,
-  });
-
-  const refreshToken = signRefreshToken({
-    sub: user._id.toString(),
-    tenantId,
-  });
-
-  const refreshTokenHash = hashRefreshToken(refreshToken);
-  await User.findByIdAndUpdate(user._id, { refreshTokenHash });
-
-  return { accessToken, refreshToken };
-}
-
-function formatAuthUser(
+function formatUser(
   user: {
     _id: { toString(): string };
     email: string;
     firstName: string;
     lastName: string;
     role: string;
-    tenantId: { toString(): string } | { _id: { toString(): string }; name: string; slug: string; plan: string; logo?: string };
   },
-  tenant: { _id?: { toString(): string }; name: string; slug: string; plan: string; logo?: string; toString?: () => string }
+  tenant: PopulatedTenant
 ): AuthUserResponse {
-  const tenantId =
-    tenant._id?.toString() ??
-    (typeof user.tenantId === "object" && "toString" in user.tenantId
-      ? user.tenantId.toString()
-      : String(user.tenantId));
-
   return {
     id: user._id.toString(),
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
     role: user.role,
-    tenantId,
+    tenantId: tenant._id.toString(),
     tenant: {
-      id: tenantId,
+      id: tenant._id.toString(),
       name: tenant.name,
       slug: tenant.slug,
       plan: tenant.plan,
-      logo: tenant.logo ?? undefined, // ← add
+      logo: tenant.logo ?? null,
     },
   };
 }
 
+// ── registerUser ──────────────────────────────────────────────────────────────
+
+export interface RegisterInput {
+  firstName: string;
+  lastName: string;
+  organizationName: string;
+  email: string;
+  password: string;
+  /**
+   * Optional base64 data-URL for the organization logo uploaded during signup.
+   * This is the org's OWN logo — separate from the fixed Govinda AI product logo.
+   */
+  organizationLogo?: string;
+}
+
+export async function registerUser(
+  input: RegisterInput
+): Promise<{ user: AuthUserResponse; tokens: TokenPair }> {
+  const { firstName, lastName, organizationName, email, password, organizationLogo } = input;
+
+  // ── Logo validation ──────────────────────────────────────────────────────
+  if (organizationLogo != null) {
+    if (typeof organizationLogo !== "string" || !organizationLogo.startsWith("data:image/")) {
+      throw new AppError(400, "Logo must be a valid image data-URL", "INVALID_LOGO");
+    }
+    if (organizationLogo.length > 2_800_000) {
+      throw new AppError(400, "Logo image is too large. Max 2 MB.", "LOGO_TOO_LARGE");
+    }
+  }
+
+  // ── Duplicate email check ────────────────────────────────────────────────
+  const existing = await User.findOne({ email: email.toLowerCase().trim() });
+  if (existing) {
+    throw new AppError(409, "Email already registered", "EMAIL_EXISTS");
+  }
+
+  // ── Create Tenant ────────────────────────────────────────────────────────
+  const slug = await buildUniqueSlug(organizationName);
+  const tenant = await Tenant.create({
+    name: organizationName.trim(),
+    slug,
+    plan: "free",
+    ...(organizationLogo ? { logo: organizationLogo } : {}),
+  });
+
+  // ── Create admin User ────────────────────────────────────────────────────
+  const hashed = await bcrypt.hash(password, 12);
+  const user = await User.create({
+    email: email.toLowerCase().trim(),
+    password: hashed,
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
+    role: "tenant_admin",
+    tenantId: tenant._id,
+    isActive: true,
+  });
+
+  const tokens = issueTokens(user._id.toString(), tenant._id.toString());
+
+  return { user: formatUser(user, tenant), tokens };
+}
+
+// ── loginUser ─────────────────────────────────────────────────────────────────
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export async function loginUser(
+  input: LoginInput
+): Promise<{ user: AuthUserResponse; tokens: TokenPair }> {
+  const { email, password } = input;
+
+  // Both `password` and `refreshTokenHash` have select:false in the schema.
+  // Must opt back in explicitly or bcrypt.compare gets undefined.
+  const user = await User.findOne({
+    email: email.toLowerCase().trim(),
+    isActive: true,
+  })
+    .select("+password +refreshTokenHash")
+    .populate("tenantId", "name slug plan isActive logo");
+
+  if (!user) {
+    throw new AppError(401, "Invalid credentials", "INVALID_CREDENTIALS");
+  }
+
+  const valid = await bcrypt.compare(password, user.password as string);
+  if (!valid) {
+    throw new AppError(401, "Invalid credentials", "INVALID_CREDENTIALS");
+  }
+
+  const tenant = user.tenantId as unknown as PopulatedTenant;
+  if (!tenant.isActive) {
+    throw new AppError(403, "Organization is inactive", "ORG_INACTIVE");
+  }
+
+  const tokens = issueTokens(user._id.toString(), tenant._id.toString());
+
+  // Store hashed refresh token — IUser field is `refreshTokenHash`
+  const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
+  await User.findByIdAndUpdate(user._id, { refreshTokenHash: refreshHash });
+
+  return { user: formatUser(user, tenant), tokens };
+}
+
+// ── getCurrentUser ────────────────────────────────────────────────────────────
+
 export async function getCurrentUser(userId: string): Promise<AuthUserResponse> {
   const user = await User.findById(userId).populate(
-  "tenantId",
-  "name slug plan isActive logo" // ← add logo
-);
+    "tenantId",
+    "name slug plan isActive logo"  // `logo` must always be in this select string
+  );
 
   if (!user || !user.isActive) {
     throw new AppError(404, "User not found", "USER_NOT_FOUND");
   }
 
-  const tenant = user.tenantId as unknown as {
-    _id: { toString(): string };
-    name: string;
-    slug: string;
-    plan: string;
-  };
+  const tenant = user.tenantId as unknown as PopulatedTenant;
+  return formatUser(user, tenant);
+}
 
-  return formatAuthUser(user, tenant);
+// ── refreshAccessToken ────────────────────────────────────────────────────────
+
+export async function refreshAccessToken(token: string): Promise<TokenPair> {
+  let payload: { sub: string; tenantId: string };
+  try {
+    payload = jwt.verify(token, JWT_REFRESH_SECRET) as typeof payload;
+  } catch {
+    throw new AppError(401, "Invalid refresh token", "INVALID_TOKEN");
+  }
+
+  const user = await User.findById(payload.sub).select("+refreshTokenHash");
+  if (!user || !user.refreshTokenHash) {
+    throw new AppError(401, "Refresh token revoked", "TOKEN_REVOKED");
+  }
+
+  // Validate against the stored hash
+  const valid = await bcrypt.compare(token, user.refreshTokenHash as string);
+  if (!valid) {
+    throw new AppError(401, "Refresh token revoked", "TOKEN_REVOKED");
+  }
+
+  const tokens = issueTokens(payload.sub, payload.tenantId);
+
+  // Rotate: store new hash
+  const newHash = await bcrypt.hash(tokens.refreshToken, 10);
+  await User.findByIdAndUpdate(user._id, { refreshTokenHash: newHash });
+
+  return tokens;
+}
+
+// ── logoutUser ────────────────────────────────────────────────────────────────
+
+export async function logoutUser(userId: string): Promise<void> {
+  await User.findByIdAndUpdate(userId, { $unset: { refreshTokenHash: 1 } });
 }
