@@ -132,7 +132,7 @@ export function SignupForm() {
                 <img
                   src={orgLogo}
                   alt="Logo preview"
-                  className="h-full w-full object-cover rounded-xl"
+                  className="h-full w-full object-contain rounded-xl p-1"
                 />
               ) : (
                 <Building2 className="h-6 w-6 text-slate-300 dark:text-slate-600" />

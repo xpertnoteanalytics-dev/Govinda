@@ -133,7 +133,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <img
                   src={user.tenant.logo}
                   alt={user.tenant.name}
-                  className="h-9 w-9 rounded-lg object-cover shrink-0 ring-1 ring-black/5 dark:ring-white/10"
+                  className="h-9 w-9 rounded-lg object-contain shrink-0 ring-1 ring-black/5 dark:ring-white/10 bg-white dark:bg-slate-800 p-0.5"
                 />
               ) : (
                 <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-sm font-bold shrink-0">

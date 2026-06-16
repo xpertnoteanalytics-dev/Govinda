@@ -148,7 +148,7 @@ export function ProfilePanel({ initialUser }: { initialUser: AuthUser | null }) 
                 {/* ✅ Org logo + name badge */}
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-white/10 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">
                   {user.tenant.logo ? (
-                    <img src={user.tenant.logo} alt="" className="h-3.5 w-3.5 rounded object-cover" />
+                    <img src={user.tenant.logo} alt="" className="h-3.5 w-3.5 rounded object-contain" />
                   ) : (
                     <Building2 className="h-3 w-3" />
                   )}
@@ -212,7 +212,7 @@ export function ProfilePanel({ initialUser }: { initialUser: AuthUser | null }) 
             <div className="flex items-center gap-3 rounded-xl p-3 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
               <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-slate-100 dark:bg-white/10 overflow-hidden">
                 {user.tenant.logo ? (
-                  <img src={user.tenant.logo} alt="" className="h-full w-full object-cover" />
+                  <img src={user.tenant.logo} alt="" className="h-full w-full object-contain p-1" />
                 ) : (
                   <Building2 className="h-4 w-4 text-slate-500 dark:text-slate-400" />
                 )}
@@ -251,7 +251,7 @@ export function ProfilePanel({ initialUser }: { initialUser: AuthUser | null }) 
               onClick={() => fileRef.current?.click()}
             >
               {logoPreview ? (
-                <img src={logoPreview} alt="Logo preview" className="h-full w-full object-cover rounded-2xl" />
+                <img src={logoPreview} alt="Logo preview" className="h-full w-full object-contain rounded-2xl p-1" />
               ) : (
                 <div className="text-center">
                   <Building2 className="h-8 w-8 text-slate-300 dark:text-slate-600 mx-auto" />

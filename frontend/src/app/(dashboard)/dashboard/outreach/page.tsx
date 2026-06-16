@@ -156,7 +156,7 @@ export default function OutreachPage() {
           <select
             value={category}
             onChange={e => setCategory(e.target.value)}
-            className="text-sm border border-border rounded-full px-3 py-1.5 bg-background text-foreground"
+            className="text-sm border border-border rounded-full px-3 py-1.5 bg-muted/20 text-foreground"
           >
             {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
