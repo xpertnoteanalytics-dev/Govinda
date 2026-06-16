@@ -1,234 +1,139 @@
-// src/services/aiService.ts
-import { GoogleGenerativeAI, GoogleGenerativeAIError } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Chat, Tenant } from "../models";
 import type { IChat, IChatMessage } from "../models/Chat";
+import { Appointment } from "../models/Appointment";
+import { Feedback } from "../models/Feedback";
 import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
-import { resolveObjectIdString } from "../utils/resolveId";
-import type { Role } from "../types/roles";
-import { extractAppointmentAndSave } from "./appointmentExtractor";
-import { extractFeedbackAndSave } from "./feedbackExtractor";
+import { AI_TOOLS, type CreateAppointmentArgs, type CreateFeedbackArgs } from "./geminiTools";
 
-const BASE_SYSTEM_PROMPT = `You are Govinda AI, an expert healthcare operations assistant...`;
+const genAI = new GoogleGenerativeAI(env.gemini.apiKey);
 
-let _genAI: GoogleGenerativeAI | null = null;
+const BASE_SYSTEM_PROMPT = `
+You are Govinda AI, an intelligent healthcare operations assistant.
+You help patients and staff with appointment booking and submitting feedback.
 
-function getGenAI(): GoogleGenerativeAI {
-  if (!env.gemini.apiKey) {
-    throw new AppError(
-      503,
-      "AI service is not configured. Set GEMINI_API_KEY.",
-      "AI_NOT_CONFIGURED"
-    );
+## YOUR PERSONALITY
+- Warm, professional, and clear
+- Never robotic — vary your language naturally
+- Always confirm what you heard before acting
+- Keep responses concise unless the user asks for detail
+
+## INTENT RECOGNITION RULES
+- User says "appointment" alone → ask: "Sure! Would you like to book a new appointment, reschedule, or check an existing one?"
+- User says "book appointment" or "schedule appointment" → begin collecting required fields one at a time
+- User says "feedback" alone → ask: "Happy to help! Are you sharing feedback about a visit, or would you like to check previously submitted feedback?"
+- User says "give feedback" or "submit feedback" → begin collecting the feedback details
+
+## APPOINTMENT BOOKING WORKFLOW
+Required fields (collect them conversationally, one or two at a time):
+1. Patient full name
+2. Phone number
+3. Service or test needed
+4. Preferred date
+5. Preferred time
+
+Rules:
+- Never assume or invent field values
+- If the user gives multiple fields in one message, acknowledge all of them and ask only for what's still missing
+- Once all 5 fields are collected, show a SUMMARY and ask for confirmation:
+  "Here's what I have:
+  • Name: [name]
+  • Phone: [phone]
+  • Service: [service]
+  • Date: [date]
+  • Time: [time]
+  Shall I go ahead and book this? (Yes / No)"
+- Call the create_appointment tool ONLY after the user replies with "yes", "confirm", "go ahead", or similar
+- Never call create_appointment without explicit confirmation
+
+## FEEDBACK WORKFLOW
+Required fields:
+1. The feedback message itself
+2. Sentiment (positive / negative / neutral — you can infer this, but confirm if unsure)
+3. Patient name (optional — if not given, proceed without it)
+
+Rules:
+- Once you have the feedback text, show a summary and ask for confirmation before saving
+- Call the create_feedback tool ONLY after confirmation
+- Never silently save feedback
+
+## ACTION TRANSPARENCY
+- After a successful create_appointment call → confirm with: "✅ Your appointment has been booked! [summary]"
+- After a failed create_appointment call → say: "❌ I wasn't able to book the appointment due to a technical issue. Please try again or contact the reception desk."
+- After a successful create_feedback call → confirm with: "✅ Your feedback has been recorded. Thank you!"
+- After a failed create_feedback call → say: "❌ There was a problem saving your feedback. Please try again."
+
+## WHAT YOU CANNOT DO
+- You cannot look up existing appointments or patient records
+- You cannot cancel or reschedule appointments
+- You cannot answer medical questions or give clinical advice
+- For anything outside your scope, politely explain and suggest contacting staff directly
+
+## ORGANIZATION
+You are deployed for: {ORG_NAME}
+Refer to the organization by this name when relevant (e.g. "at {ORG_NAME}").
+`.trim();
+
+function buildSystemPrompt(orgName: string, customPrompt?: string): string {
+  const base = BASE_SYSTEM_PROMPT.replaceAll("{ORG_NAME}", orgName);
+  if (customPrompt?.trim()) {
+    return `${base}\n\n## ADDITIONAL INSTRUCTIONS FROM ${orgName.toUpperCase()}\n${customPrompt.trim()}`;
   }
-  if (!_genAI) {
-    _genAI = new GoogleGenerativeAI(env.gemini.apiKey);
+  return base;
+}
+
+async function executeCreateAppointment(
+  args: CreateAppointmentArgs,
+  tenantId: string
+): Promise<{ success: boolean; message: string; data?: Record<string, unknown> }> {
+  try {
+    const doc = await Appointment.create({
+      tenantId,
+      patientName: args.patientName,
+      phone: args.phone,
+      service: args.service,
+      appointmentDate: args.appointmentDate,
+      appointmentTime: args.appointmentTime,
+      notes: args.notes ?? "",
+      source: "ai_chat",
+    });
+
+    return {
+      success: true,
+      message: "Appointment created successfully.",
+      data: {
+        id: (doc as { _id: unknown })._id,
+        patientName: args.patientName,
+        phone: args.phone,
+        service: args.service,
+        appointmentDate: args.appointmentDate,
+        appointmentTime: args.appointmentTime,
+      },
+    };
+  } catch (err) {
+    console.error("[aiService] create_appointment failed:", err);
+    return { success: false, message: "Database error while creating appointment." };
   }
-  return _genAI;
 }
 
-function classifyGeminiError(err: unknown): AppError {
-  console.error("[Gemini] RAW:", JSON.stringify(err, Object.getOwnPropertyNames(err as object), 2));
-  console.error("[Gemini] TYPE:", (err as any)?.constructor?.name);
-  console.error("[Gemini] STATUS:", (err as any)?.status);
-  console.error("[Gemini] MESSAGE:", (err as any)?.message);
+async function executeCreateFeedback(
+  args: CreateFeedbackArgs,
+  tenantId: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    await Feedback.create({
+      tenantId,
+      patientName: args.patientName ?? undefined,
+      feedback: args.feedback,
+      sentiment: args.sentiment,
+      source: "ai_chat",
+    });
 
-  if (err instanceof GoogleGenerativeAIError) {
-    const msg = err.message.toLowerCase();
-    const httpStatus = (err as any)?.status ?? 0;
-
-    if (httpStatus === 401 || httpStatus === 403 || msg.includes("api_key")) {
-      return new AppError(503, "Invalid Gemini API key", "AI_NOT_CONFIGURED");
-    }
-    if (httpStatus === 429 || msg.includes("quota") || msg.includes("resource exhausted")) {
-      return new AppError(429, "Gemini quota exceeded", "AI_QUOTA_EXCEEDED");
-    }
-    if (httpStatus === 404 || msg.includes("not found")) {
-      return new AppError(503, `Model not found: ${env.gemini.model}`, "AI_MODEL_NOT_FOUND");
-    }
-    if (msg.includes("safety") || msg.includes("blocked")) {
-      return new AppError(422, "Blocked by safety filters", "AI_SAFETY_BLOCK");
-    }
-    return new AppError(502, `Gemini error ${httpStatus}: ${(err as any).message}`, "AI_GENERATION_FAILED");
-  }
-
-  console.error("[Gemini] NOT GoogleGenerativeAIError:", err);
-  return new AppError(502, `AI failed: ${(err as any)?.message ?? "unknown"}`, "AI_GENERATION_FAILED");
-}
-
-export async function buildSystemPrompt(tenantId: string, userRole: Role): Promise<string> {
-  const tenant = await Tenant.findById(
-    resolveObjectIdString(tenantId, "tenantId")
-  ).select("name slug plan settings");
-
-  const parts = [BASE_SYSTEM_PROMPT];
-
-  if (tenant) {
-    parts.push(
-      `\nOrganization: ${tenant.name} (${tenant.slug})`,
-      `Plan: ${tenant.plan}`,
-      `User role: ${userRole.replace(/_/g, " ")}`
-    );
-
-    if (tenant.settings?.aiSystemPrompt?.trim()) {
-      parts.push(
-        `\nOrganization-specific instructions:\n${tenant.settings.aiSystemPrompt.trim()}`
-      );
-    }
-  }
-
-  return parts.join("\n");
-}
-
-function toGeminiHistory(messages: IChatMessage[]) {
-  return messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
-}
-
-async function generateAssistantReply(
-  systemPrompt: string,
-  history: IChatMessage[],
-  userMessage: string
-): Promise<string> {
-  const genAI = getGenAI();
-
-  const model = genAI.getGenerativeModel({
-    model: env.gemini.model,
-    systemInstruction: systemPrompt,
-  });
-
-  const geminiHistory = toGeminiHistory(history);
-
-  console.debug(
-    `[Gemini] Starting chat | model=${env.gemini.model} | historyTurns=${geminiHistory.length}`
-  );
-
-  const chat = model.startChat({
-    history: geminiHistory,
-    generationConfig: {
-      maxOutputTokens: 2048,
-      temperature: 0.7,
-    },
-  });
-
-  const result = await chat.sendMessage(userMessage);
-  const text = result.response.text();
-
-  if (!text?.trim()) {
-    throw new AppError(502, "Empty response from AI model", "AI_EMPTY_RESPONSE");
-  }
-
-  console.debug(`[Gemini] Reply received | chars=${text.length}`);
-  return text.trim();
-}
-
-function friendlyUnavailableMessage(code?: string): string {
-  if (code === "AI_SAFETY_BLOCK") {
-    return "Your message was flagged by safety filters. Please rephrase and try again.";
-  }
-  if (code === "AI_QUOTA_EXCEEDED") {
-    return "The AI service is temporarily rate-limited. Please try again in a few minutes.";
-  }
-  return [
-    "I'm temporarily unable to reach the AI service.",
-    "",
-    "Please try again in a moment. If the issue persists, contact your administrator.",
-  ].join("\n");
-}
-
-function deriveTitle(firstMessage: string): string {
-  const cleaned = firstMessage.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= 48) return cleaned || "New conversation";
-  return `${cleaned.slice(0, 45)}…`;
-}
-
-async function getOwnedChat(
-  chatId: string,
-  tenantId: string,
-  userId: string
-): Promise<IChat> {
-  const chat = await Chat.findOne({
-    _id: resolveObjectIdString(chatId, "chatId"),
-    tenantId: resolveObjectIdString(tenantId, "tenantId"),
-    userId: resolveObjectIdString(userId, "userId"),
-  });
-  if (!chat) {
-    throw new AppError(404, "Conversation not found", "CHAT_NOT_FOUND");
-  }
-  return chat;
-}
-
-export function serializeChat(chat: IChat) {
-  return {
-    id: chat._id.toString(),
-    title: chat.title,
-    tenantId: chat.tenantId.toString(),
-    userId: chat.userId.toString(),
-    messages: chat.messages.map((m) => ({
-      id: String((m as IChatMessage & { _id?: unknown })._id ?? ""),
-      role: m.role,
-      content: m.content,
-      createdAt: m.createdAt.toISOString(),
-    })),
-    createdAt: chat.createdAt.toISOString(),
-    updatedAt: chat.updatedAt.toISOString(),
-  };
-}
-
-export function serializeChatSummary(chat: IChat) {
-  const lastMessage = chat.messages[chat.messages.length - 1];
-  return {
-    id: chat._id.toString(),
-    title: chat.title,
-    preview: lastMessage?.content?.slice(0, 80) ?? "",
-    messageCount: chat.messages.length,
-    updatedAt: chat.updatedAt.toISOString(),
-    createdAt: chat.createdAt.toISOString(),
-  };
-}
-
-export async function listChats(tenantId: string, userId: string) {
-  const chats = await Chat.find({
-    tenantId: resolveObjectIdString(tenantId, "tenantId"),
-    userId: resolveObjectIdString(userId, "userId"),
-  })
-    .sort({ updatedAt: -1 })
-    .limit(50);
-
-  return chats.map(serializeChatSummary);
-}
-
-export async function getChat(chatId: string, tenantId: string, userId: string) {
-  const chat = await getOwnedChat(chatId, tenantId, userId);
-  return serializeChat(chat);
-}
-
-export async function createChat(tenantId: string, userId: string, title?: string) {
-  const chat = await Chat.create({
-    tenantId: resolveObjectIdString(tenantId, "tenantId"),
-    userId: resolveObjectIdString(userId, "userId"),
-    title: title?.trim() || "New conversation",
-    messages: [],
-  });
-  return serializeChat(chat);
-}
-
-export async function deleteChat(
-  chatId: string,
-  tenantId: string,
-  userId: string
-): Promise<void> {
-  const result = await Chat.deleteOne({
-    _id: resolveObjectIdString(chatId, "chatId"),
-    tenantId: resolveObjectIdString(tenantId, "tenantId"),
-    userId: resolveObjectIdString(userId, "userId"),
-  });
-  if (result.deletedCount === 0) {
-    throw new AppError(404, "Conversation not found", "CHAT_NOT_FOUND");
+    return { success: true, message: "Feedback saved successfully." };
+  } catch (err) {
+    console.error("[aiService] create_feedback failed:", err);
+    return { success: false, message: "Database error while saving feedback." };
   }
 }
 
@@ -236,85 +141,147 @@ export async function sendMessage(
   chatId: string,
   tenantId: string,
   userId: string,
-  userRole: Role,
-  content: string
-) {
-  const chat = await getOwnedChat(chatId, tenantId, userId);
-  const trimmed = content.trim();
+  userRole: string,
+  userContent: string
+): Promise<{
+  chat: IChat;
+  userMessage: IChatMessage;
+  assistantMessage: IChatMessage;
+}> {
+  const chat = await Chat.findOne({ _id: chatId, tenantId, userId });
+  if (!chat) throw new AppError(404, "Chat not found");
 
-  if (!trimmed) throw new AppError(400, "Message cannot be empty", "EMPTY_MESSAGE");
-  if (trimmed.length > 8000) throw new AppError(400, "Message is too long", "MESSAGE_TOO_LONG");
+  const tenant = await Tenant.findById(tenantId).lean();
+  const orgName = (tenant as { name?: string } | null)?.name ?? "your organization";
+  const customPrompt = (tenant as { settings?: { aiSystemPrompt?: string } } | null)?.settings?.aiSystemPrompt;
+  const systemPrompt = buildSystemPrompt(orgName, customPrompt);
 
+  const trimmed = userContent.trim();
   const userMsg: IChatMessage = {
     role: "user",
     content: trimmed,
     createdAt: new Date(),
-  };
+  } as IChatMessage;
   chat.messages.push(userMsg);
 
-  if (chat.messages.length === 1 && chat.title === "New conversation") {
-    chat.title = deriveTitle(trimmed);
-  }
+  const historyForGemini = chat.messages
+    .slice(0, -1)
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
 
-  const historyBeforeAssistant = chat.messages.slice(0, -1);
+  const model = genAI.getGenerativeModel({
+    model: env.gemini.model,
+    systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+    tools: AI_TOOLS,
+  });
 
-  let assistantContent: string;
-  let errorCode: string | undefined;
+  const geminiChat = model.startChat({ history: historyForGemini });
 
-  try {
-    // ✅ Always use Gemini
-    console.log("[aiService] Using Gemini");
-    const systemPrompt = await buildSystemPrompt(tenantId, userRole);
-    assistantContent = await generateAssistantReply(
-      systemPrompt,
-      historyBeforeAssistant,
-      trimmed
-    );
+  let assistantContent = "";
+  let retries = 0;
 
-    // ✅ Save appointment if detected
-    await extractAppointmentAndSave(trimmed, assistantContent, tenantId);
+  while (retries < 3) {
+    try {
+      const result = await geminiChat.sendMessage(trimmed);
+      const response = result.response;
+      const candidate = response.candidates?.[0];
 
-    // ✅ Save feedback if detected
-    await extractFeedbackAndSave(trimmed, assistantContent, tenantId);
+      if (!candidate) {
+        assistantContent = "I'm sorry, I couldn't generate a response. Please try again.";
+        break;
+      }
 
-  } catch (err) {
-    const appErr = err instanceof AppError ? err : classifyGeminiError(err);
-    errorCode = appErr.code;
+      const functionCall = candidate.content?.parts?.find((p) => p.functionCall);
 
-    const swallowable = new Set([
-      "AI_NOT_CONFIGURED",
-      "AI_GENERATION_FAILED",
-      "AI_EMPTY_RESPONSE",
-      "AI_QUOTA_EXCEEDED",
-      "AI_SAFETY_BLOCK",
-      "AI_NETWORK_ERROR",
-      "AI_MODEL_NOT_FOUND",
-    ]);
+      if (functionCall?.functionCall) {
+        const { name, args } = functionCall.functionCall;
+        let toolResult: { success: boolean; message: string; data?: Record<string, unknown> };
 
-    if (!swallowable.has(appErr.code)) throw appErr;
-    assistantContent = friendlyUnavailableMessage(errorCode);
+        if (name === "create_appointment") {
+          toolResult = await executeCreateAppointment(
+            args as unknown as CreateAppointmentArgs,
+            tenantId
+          );
+        } else if (name === "create_feedback") {
+          toolResult = await executeCreateFeedback(
+            args as unknown as CreateFeedbackArgs,
+            tenantId
+          );
+        } else {
+          toolResult = { success: false, message: `Unknown tool: ${name}` };
+        }
+
+        const toolResponse = await geminiChat.sendMessage([
+          {
+            functionResponse: {
+              name,
+              response: toolResult,
+            },
+          },
+        ]);
+
+        assistantContent =
+          toolResponse.response.text() ||
+          (toolResult.success
+            ? "✅ Done! Is there anything else I can help you with?"
+            : "❌ Something went wrong. Please try again.");
+      } else {
+        assistantContent = response.text();
+      }
+
+      break;
+    } catch (err: unknown) {
+      retries++;
+      if (retries >= 3) {
+        console.error("[aiService] Gemini failed after 3 retries:", err);
+        assistantContent = "I'm experiencing a technical issue. Please try again in a moment.";
+      } else {
+        await new Promise((r) => setTimeout(r, 2000 * retries));
+      }
+    }
   }
 
   const assistantMsg: IChatMessage = {
     role: "assistant",
     content: assistantContent,
     createdAt: new Date(),
-  };
-
+  } as IChatMessage;
   chat.messages.push(assistantMsg);
+
+  if (chat.messages.length === 2 && (!chat.title || chat.title === "New Chat")) {
+    chat.title = trimmed.slice(0, 60) + (trimmed.length > 60 ? "…" : "");
+  }
+
   await chat.save();
 
   return {
-    chat: serializeChat(chat),
-    userMessage: {
-      role: userMsg.role,
-      content: userMsg.content,
-      createdAt: userMsg.createdAt.toISOString(),
-    },
-    assistantMessage: {
-      role: assistantMsg.role,
-      content: assistantMsg.content,
-      createdAt: assistantMsg.createdAt.toISOString(),
-    },
+    chat,
+    userMessage: userMsg,
+    assistantMessage: assistantMsg,
   };
+}
+
+export async function listChats(tenantId: string, userId: string) {
+  return Chat.find({ tenantId, userId })
+    .sort({ updatedAt: -1 })
+    .select("_id title updatedAt")
+    .lean();
+}
+
+export async function createChat(tenantId: string, userId: string, title?: string) {
+  return Chat.create({ tenantId, userId, title: title?.trim() || "New Chat", messages: [] });
+}
+
+export async function getChat(chatId: string, tenantId: string, userId: string) {
+  const chat = await Chat.findOne({ _id: chatId, tenantId, userId });
+  if (!chat) throw new AppError(404, "Chat not found");
+  return chat;
+}
+
+export async function deleteChat(chatId: string, tenantId: string, userId: string) {
+  const result = await Chat.deleteOne({ _id: chatId, tenantId, userId });
+  if (result.deletedCount === 0) throw new AppError(404, "Chat not found");
 }

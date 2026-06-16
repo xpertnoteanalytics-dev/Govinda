@@ -1,144 +1,146 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import {
-  MessageSquarePlus,
-  Trash2,
-  MessagesSquare,
-  Sparkles,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { ChatSummary } from "@/lib/chat-api";
-import { createChat, deleteChat } from "@/lib/chat-api";
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { Plus, Trash2, MessageSquare } from "lucide-react";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { listChats, deleteChat, createChat, type ChatMeta } from "@/lib/chat-api";
 
 interface ChatSidebarProps {
-  chats: ChatSummary[];
-  onChatsChange: () => void;
-  className?: string;
+  activeChatId: string | null;
+  onSelectChat: (id: string) => void;
+  onNewChat: () => void;
 }
 
-export function ChatSidebar({ chats, onChatsChange, className }: ChatSidebarProps) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [isCreating, setIsCreating] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+export function ChatSidebar({ activeChatId, onSelectChat, onNewChat }: ChatSidebarProps) {
+  const { user } = useAuth();
+  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const orgName = user?.tenant?.name ?? "";
+  const orgLogo = user?.tenant?.logo ?? null;
+
+  const fetchChats = useCallback(async () => {
+    try {
+      const data = await listChats();
+      setChats(data);
+    } catch {
+      // non-critical
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchChats();
+  }, [fetchChats]);
 
   async function handleNewChat() {
-    setIsCreating(true);
     try {
       const chat = await createChat();
-      onChatsChange();
-      router.push(`/dashboard/chat/${chat.id}`);
+      setChats((prev) => [chat, ...prev]);
+      onSelectChat(chat._id);
     } catch {
-      // ignore
-    } finally {
-      setIsCreating(false);
+      // error handled in ChatWindow
     }
   }
 
   async function handleDelete(e: React.MouseEvent, chatId: string) {
-    e.preventDefault();
     e.stopPropagation();
-    setDeletingId(chatId);
     try {
       await deleteChat(chatId);
-      onChatsChange();
-      if (pathname.includes(chatId)) {
-        router.push("/dashboard/chat");
-      }
+      setChats((prev) => prev.filter((c) => c._id !== chatId));
+      if (activeChatId === chatId) onNewChat();
     } catch {
-      // ignore
-    } finally {
-      setDeletingId(null);
+      // non-critical
     }
   }
 
   return (
-    <aside
-      className={cn(
-        "flex h-full w-full flex-col border-r border-slate-200 bg-white",
-        className
-      )}
-    >
-      <div className="border-b border-slate-100 p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white">
-            <Sparkles className="h-4 w-4" aria-hidden />
+    <div className="h-full flex flex-col bg-sidebar border-r border-border">
+      <div className="p-4 border-b border-border">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shrink-0">
+            <span className="text-white text-xs font-bold">G</span>
           </div>
-          <div>
-            <h2 className="text-sm font-semibold text-ink">AI Assistant</h2>
-            <p className="text-xs text-ink-muted">Healthcare copilot</p>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground truncate">Govinda AI</p>
+            <p className="text-xs text-muted-foreground">Healthcare assistant</p>
           </div>
         </div>
+
+        {orgName && (
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-muted/50">
+            {orgLogo ? (
+              <img
+                src={orgLogo}
+                alt={orgName}
+                className="w-5 h-5 rounded object-contain shrink-0"
+              />
+            ) : (
+              <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0">
+                <span className="text-primary text-[10px] font-bold">
+                  {orgName.charAt(0).toUpperCase()}
+                </span>
+              </div>
+            )}
+            <span className="text-xs text-muted-foreground truncate">{orgName}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="p-3">
         <button
-          type="button"
           onClick={handleNewChat}
-          disabled={isCreating}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 disabled:opacity-60"
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors text-sm font-medium"
         >
-          <MessageSquarePlus className="h-4 w-4" aria-hidden />
-          {isCreating ? "Creating…" : "New conversation"}
+          <Plus className="w-4 h-4 shrink-0" />
+          New conversation
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
-        {chats.length === 0 ? (
-          <div className="px-3 py-8 text-center">
-            <MessagesSquare className="mx-auto h-8 w-8 text-ink-subtle" />
-            <p className="mt-2 text-sm text-ink-muted">No conversations yet</p>
-            <p className="mt-1 text-xs text-ink-subtle">
-              Start a new chat to get help
-            </p>
+      <div className="flex-1 overflow-y-auto px-2 pb-4">
+        {loading ? (
+          <div className="space-y-2 px-1">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-10 rounded-lg bg-muted animate-pulse" />
+            ))}
+          </div>
+        ) : chats.length === 0 ? (
+          <div className="px-3 py-6 text-center">
+            <MessageSquare className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
+            <p className="text-xs text-muted-foreground">No conversations yet</p>
           </div>
         ) : (
-          <ul className="space-y-1">
-            {chats.map((chat) => {
-              const href = `/dashboard/chat/${chat.id}`;
-              const isActive = pathname === href;
-
-              return (
-                <li key={chat.id}>
-                  <Link
-                    href={href}
-                    className={cn(
-                      "group flex items-start gap-2 rounded-xl px-3 py-2.5 transition-colors",
-                      isActive
-                        ? "bg-brand-50 text-brand-900"
-                        : "text-ink-muted hover:bg-slate-50 hover:text-ink"
-                    )}
+          <ul className="space-y-0.5">
+            {chats.map((chat) => (
+              <li key={chat._id}>
+                <button
+                  onClick={() => onSelectChat(chat._id)}
+                  className={`
+                    group w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left
+                    text-sm transition-colors
+                    ${
+                      activeChatId === chat._id
+                        ? "bg-accent text-accent-foreground"
+                        : "text-foreground hover:bg-muted"
+                    }
+                  `}
+                >
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                  <span className="flex-1 truncate">{chat.title || "Untitled"}</span>
+                  <button
+                    onClick={(e) => handleDelete(e, chat._id)}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:text-destructive"
+                    aria-label="Delete conversation"
                   >
-                    <MessagesSquare
-                      className={cn(
-                        "mt-0.5 h-4 w-4 shrink-0",
-                        isActive ? "text-brand-600" : "text-ink-subtle"
-                      )}
-                      aria-hidden
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{chat.title}</p>
-                      {chat.preview && (
-                        <p className="truncate text-xs opacity-70">{chat.preview}</p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => handleDelete(e, chat.id)}
-                      disabled={deletingId === chat.id}
-                      className="shrink-0 rounded-lg p-1 opacity-0 transition-opacity hover:bg-red-50 hover:text-clinical-danger group-hover:opacity-100"
-                      aria-label="Delete conversation"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </Link>
-                </li>
-              );
-            })}
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </button>
+              </li>
+            ))}
           </ul>
         )}
       </div>
-    </aside>
+    </div>
   );
 }
