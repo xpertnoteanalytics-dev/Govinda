@@ -17,6 +17,7 @@ async function bootstrap() {
   const server = app.listen(env.port, () => {
     console.log(`[api] Govinda AI API running on port ${env.port}`);
 
+    // Keep-alive for Render free tier
     if (env.nodeEnv === "production") {
       setInterval(() => {
         fetch(`http://localhost:${env.port}/api/health`)
@@ -24,6 +25,10 @@ async function bootstrap() {
       }, 10 * 60 * 1000);
     }
   });
+
+  // ===== DEBUG ADDED =====
+  console.log("[ws] OpenAI key present:", env.openai.apiKey ? `yes (len=${env.openai.apiKey.length})` : "NO — KEY IS EMPTY");
+  // ===== DEBUG ADDED =====
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -43,58 +48,35 @@ async function bootstrap() {
   wss.on("connection", (ws, req) => {
     console.log("[ws] Exotel voicebot connected from", req.socket.remoteAddress);
 
-    // FIX 1: Log the OpenAI API key status at connection time so you can
-    // immediately see in logs whether the key is present or empty.
-    console.log(
-      "[ws] OpenAI key present:",
-      env.openai.apiKey ? `yes (len=${env.openai.apiKey.length})` : "NO — KEY IS EMPTY"
-    );
-
-    // Bridge is created without a script initially; script is injected
-    // once the start event reveals the callSid and we fetch from DB.
-    // FIX 2: Pass a script setter so the bridge can receive the script
-    // after the DB lookup completes, instead of reading a dead ws property.
-    let scriptResolver: ((script: string) => void) | null = null;
-    const scriptPromise = new Promise<string | undefined>((resolve) => {
-      // Resolve after 3 seconds even if no script found, so the bridge
-      // doesn't wait forever before greeting the caller.
-      const timeout = setTimeout(() => resolve(undefined), 3000);
-      scriptResolver = (script: string) => {
-        clearTimeout(timeout);
-        resolve(script);
-      };
-    });
-
-    const bridge = createRealtimeBridge(ws, scriptPromise);
+    const bridge = createRealtimeBridge(ws);
 
     ws.on("message", async (message: RawData) => {
       const raw = message.toString();
 
-      // FIX 3: Parse the start event to get callSid and fetch script,
-      // then resolve the promise so the bridge gets the script in time.
       try {
         const parsed = JSON.parse(raw) as {
           event?: string;
-          start?: { callSid?: string; streamSid?: string };
+          start?: { callSid?: string };
         };
 
-        if (parsed.event === "start") {
-          // Log the full start payload so we can see Exotel's exact schema
-          console.log("[ws] start payload:", JSON.stringify(parsed.start));
+        // ===== DEBUG ADDED =====
+        if (parsed.event && parsed.event !== "media") {
+          console.log("[ws] non-media event received:", raw.slice(0, 500));
+        }
+        // ===== DEBUG ADDED =====
 
-          const callSid = parsed.start?.callSid ?? parsed.start?.streamSid;
-          if (callSid && scriptResolver) {
-            Call.findOne({ exotelCallSid: callSid })
-              .select("script")
-              .lean()
-              .then((doc) => {
-                if (doc?.script && scriptResolver) {
-                  console.log("[ws] found script for callSid:", callSid);
-                  scriptResolver(doc.script);
-                }
-              })
-              .catch(() => undefined);
-          }
+        if (parsed.event === "start" && parsed.start?.callSid) {
+          const callSid = parsed.start.callSid;
+          Call.findOne({ exotelCallSid: callSid })
+            .select("script")
+            .lean()
+            .then((doc) => {
+              if (doc?.script) {
+                (ws as typeof ws & { _callScript?: string })._callScript =
+                  doc.script;
+              }
+            })
+            .catch(() => undefined);
         }
       } catch {
         // not JSON — ignore
