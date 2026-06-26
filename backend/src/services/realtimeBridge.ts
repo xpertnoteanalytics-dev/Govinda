@@ -2,9 +2,8 @@
 import WebSocket from "ws";
 import { env } from "../config/env";
 
-// ✅ Fixed: correct model name
 const OPENAI_REALTIME_URL =
-  "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
+  "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
 
 type ExotelEvent =
   | { event: "connected"; protocol: string; version: string }
@@ -12,7 +11,7 @@ type ExotelEvent =
       event: "start";
       start: {
         callSid: string;
-        streamSid: string; // ✅ Added: separate from callSid
+        streamSid: string;
         customParameters?: Record<string, string>;
       };
     }
@@ -26,7 +25,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
   let streamSid = "";
   let callSid = "";
   let sessionReady = false;
-  let sessionUpdated = false; // ✅ Added: track update separately
+  let sessionUpdated = false;
   const audioQueue: string[] = [];
 
   // ─── helpers ────────────────────────────────────────────────────
@@ -56,22 +55,26 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
 
   // ─── OpenAI connection ───────────────────────────────────────────
 
+  // ===== CHANGED: connectOpenAi() is now called immediately at the bottom
+  // of createRealtimeBridge() instead of waiting for the Exotel start event.
+  // Everything inside this function is unchanged. =====
   function connectOpenAi() {
-    // ===== DEBUG ADDED =====
-    console.log("[bridge] connectOpenAi() called — key present:", env.openai.apiKey ? `yes (len=${env.openai.apiKey.length})` : "NO — KEY IS EMPTY", "url:", OPENAI_REALTIME_URL);
-    // ===== DEBUG ADDED =====
+    console.log(
+      "[bridge] connectOpenAi() called — key present:",
+      env.openai.apiKey ? `yes (len=${env.openai.apiKey.length})` : "NO — KEY IS EMPTY",
+      "url:", OPENAI_REALTIME_URL
+    );
 
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
         Authorization: `Bearer ${env.openai.apiKey}`,
-        "OpenAI-Beta": "realtime=v1", // ✅ Required header
+        "OpenAI-Beta": "realtime=v1",
       },
     });
 
     openAiWs.on("open", () => {
       console.log("[bridge] OpenAI Realtime connected");
 
-      // ✅ Send session config immediately on open
       sendToOpenAi({
         type: "session.update",
         session: {
@@ -103,17 +106,14 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
 
       const type = event.type as string;
 
-      // ✅ Fixed: session.created → mark ready + flush + greet ONCE
       if (type === "session.created") {
         console.log("[bridge] OpenAI session created");
         sessionReady = true;
         flushQueue();
-        // Trigger AI greeting
         sendToOpenAi({ type: "response.create" });
         return;
       }
 
-      // ✅ Fixed: session.updated → just flush, no extra greeting
       if (type === "session.updated") {
         console.log("[bridge] OpenAI session updated");
         sessionUpdated = true;
@@ -124,7 +124,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         return;
       }
 
-      // ✅ Stream audio delta back to Exotel
       if (type === "response.audio.delta") {
         const delta = event.delta as string | undefined;
         if (delta) {
@@ -137,7 +136,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         return;
       }
 
-      // ✅ Mark end of AI speech turn
       if (type === "response.audio.done") {
         sendToExotel({
           event: "mark",
@@ -147,7 +145,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         return;
       }
 
-      // ✅ Log transcripts for debugging / saving later
       if (type === "conversation.item.input_audio_transcription.completed") {
         const transcript = event.transcript as string;
         console.log(`[bridge] User said: "${transcript}" | callSid: ${callSid}`);
@@ -174,9 +171,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     });
 
     openAiWs.on("error", (err) => {
-      // ===== DEBUG ADDED =====
       console.error("[bridge] OpenAI WS error:", err.message, JSON.stringify(err));
-      // ===== DEBUG ADDED =====
     });
   }
 
@@ -199,11 +194,11 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       case "start":
-        // ✅ Fixed: use streamSid from start event, keep callSid separate
+        // ===== CHANGED: start event now only captures metadata.
+        // connectOpenAi() is no longer called here. =====
         callSid   = evt.start.callSid;
         streamSid = evt.start.streamSid ?? evt.start.callSid;
         console.log("[bridge] stream started — callSid:", callSid, "streamSid:", streamSid);
-        connectOpenAi();
         break;
 
       case "media": {
@@ -214,7 +209,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
             audio: payload,
           });
         } else {
-          // Buffer audio until session is ready
           audioQueue.push(payload);
         }
         break;
@@ -240,9 +234,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       default:
-        // ===== DEBUG ADDED =====
         console.log("[bridge] unknown Exotel event:", (evt as { event: string }).event, "raw:", raw.slice(0, 300));
-        // ===== DEBUG ADDED =====
     }
   }
 
@@ -261,6 +253,10 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     sessionUpdated = false;
     audioQueue.length = 0;
   }
+
+  // ===== CHANGED: connect to OpenAI immediately on bridge creation,
+  // do not wait for the Exotel start event. =====
+  connectOpenAi();
 
   return { handleExotelMessage, destroy };
 }
