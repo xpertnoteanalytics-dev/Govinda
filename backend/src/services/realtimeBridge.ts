@@ -88,7 +88,18 @@ type ExotelEvent =
 // Bridge factory
 // ---------------------------------------------------------------------------
 
-export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
+/**
+ * Resolves the calling script for a given Exotel call_sid.
+ * Supplied by the caller (index.ts) so this module stays decoupled from
+ * the DB layer. Must resolve (or reject) before the OpenAI session is
+ * configured — the bridge will wait on it.
+ */
+export type ScriptResolver = (callSid: string) => Promise<string | undefined>;
+
+export function createRealtimeBridge(
+  exotelWs: WebSocket,
+  resolveScript: ScriptResolver
+) {
   let openAiWs: WebSocket | null = null;
   let streamSid = "";
   let callSid = "";
@@ -99,6 +110,13 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
    * we must wait for the server to acknowledge our session.update.
    */
   let sessionReady = false;
+
+  /**
+   * True once we've started (or finished) connecting to OpenAI.
+   * Guards against double-connecting if "start" somehow fires twice
+   * or media arrives in an unexpected order.
+   */
+  let openAiConnectStarted = false;
 
   /** Pre-session audio buffer (chunks received before sessionReady = true). */
   const audioQueue: string[] = [];
@@ -132,13 +150,31 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
 
   // ─── OpenAI connection ────────────────────────────────────────────────────
 
-  function connectOpenAi(): void {
+  /**
+   * Connects to the OpenAI Realtime API and sends session.update using the
+   * given script. This is NOT called automatically on bridge creation —
+   * it is only invoked once we have a callSid/streamSid from Exotel's
+   * "start" event AND the script lookup (DB call) has resolved. This
+   * guarantees session.update is never sent with a stale/missing script.
+   *
+   * Audio frames that arrive from Exotel before this resolves are queued
+   * by handleExotelMessage() (via the existing audioQueue) and flushed
+   * once the OpenAI session reaches session.updated.
+   */
+  function connectOpenAi(script: string | undefined): void {
+    if (openAiConnectStarted) {
+      console.warn("[bridge] connectOpenAi() called more than once — ignoring");
+      return;
+    }
+    openAiConnectStarted = true;
+
     console.log(
       "[bridge] connectOpenAi() — key present:",
       env.openai.apiKey
         ? `yes (len=${env.openai.apiKey.length})`
         : "NO — KEY IS EMPTY",
-      "| url:", OPENAI_REALTIME_URL
+      "| url:", OPENAI_REALTIME_URL,
+      "| script:", script ? `provided (len=${script.length})` : "none (using default instructions)"
     );
 
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
@@ -505,7 +541,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         );
         break;
 
-      case "start":
+      case "start": {
         callSid   = evt.start.call_sid;
         streamSid = evt.start.stream_sid ?? evt.start.call_sid;
         console.log(
@@ -513,7 +549,29 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
           "| streamSid:", streamSid,
           "| params:", JSON.stringify(evt.start.customParameters ?? {})
         );
+
+        // Resolve the script BEFORE connecting to OpenAI. This is the fix:
+        // session.update (which carries `instructions`) is only ever sent
+        // once we actually have the script in hand — there is no longer a
+        // window where the OpenAI session gets configured with stale or
+        // default instructions because a DB lookup hadn't finished yet.
+        //
+        // Any Exotel media frames that arrive while this lookup is in
+        // flight are safely queued by the "media" case below and flushed
+        // once session.updated comes back.
+        resolveScript(callSid)
+          .then((script) => {
+            connectOpenAi(script);
+          })
+          .catch((err) => {
+            console.error(
+              "[bridge][exotel-start] script lookup failed, proceeding with default instructions:",
+              err instanceof Error ? err.message : err
+            );
+            connectOpenAi(undefined);
+          });
         break;
+      }
 
       case "media": {
         const payload = evt.media.payload;
@@ -521,7 +579,8 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
           // Session is ready — send directly to OpenAI input buffer
           sendToOpenAi({ type: "input_audio_buffer.append", audio: payload });
         } else {
-          // Session not yet configured — buffer the chunk.
+          // Session not yet configured (still connecting / awaiting script
+          // resolution / awaiting session.updated) — buffer the chunk.
           // Drop oldest if the queue is full to prevent unbounded memory growth.
           if (audioQueue.length >= AUDIO_QUEUE_MAX) {
             audioQueue.shift();
@@ -583,8 +642,11 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     audioQueue.length = 0;
   }
 
-  // Connect to OpenAI immediately on bridge creation
-  connectOpenAi();
+  // NOTE: connectOpenAi() is intentionally NOT called here.
+  // It is now triggered from inside handleExotelMessage()'s "start" case,
+  // once the script has been resolved. This is the core fix: previously
+  // this factory connected to OpenAI (and sent session.update) immediately
+  // on construction, before any callSid/streamSid/script was available.
 
   return { handleExotelMessage, destroy };
 }
