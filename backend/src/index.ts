@@ -11,12 +11,9 @@ import { Call } from "./models";
 
 async function bootstrap() {
   await connectDatabase();
-
   const app = createApp();
-
   const server = app.listen(env.port, () => {
     console.log(`[api] Govinda AI API running on port ${env.port}`);
-
     // Keep-alive for Render free tier
     if (env.nodeEnv === "production") {
       setInterval(() => {
@@ -35,7 +32,6 @@ async function bootstrap() {
   server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
     const pathname = req.url ?? "";
     console.log("[ws] upgrade request for:", pathname);
-
     if (pathname === "/ws") {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
@@ -48,40 +44,51 @@ async function bootstrap() {
   wss.on("connection", (ws, req) => {
     console.log("[ws] Exotel voicebot connected from", req.socket.remoteAddress);
 
-    const bridge = createRealtimeBridge(ws);
+    // The bridge no longer takes a static `script` argument. Instead it takes
+    // a resolver function that it calls itself, internally, once Exotel's
+    // "start" event gives it a call_sid — and it waits for that resolver to
+    // settle BEFORE opening the OpenAI socket / sending session.update.
+    //
+    // This replaces the old (ws as any)._callScript hack: there is no more
+    // race, because the script is fetched on-demand by the bridge at the
+    // exact moment it's needed, not pushed in from outside on a best-effort
+    // basis after construction.
+    const bridge = createRealtimeBridge(ws, async (callSid: string) => {
+      try {
+        const doc = await Call.findOne({ exotelCallSid: callSid })
+          .select("script")
+          .lean();
+        return doc?.script ?? undefined;
+      } catch (err) {
+        console.error(
+          "[ws] script lookup failed for callSid:", callSid,
+          "|", err instanceof Error ? err.message : err
+        );
+        return undefined;
+      }
+    });
 
-    ws.on("message", async (message: RawData) => {
+    ws.on("message", (message: RawData) => {
       const raw = message.toString();
 
+      // ===== DEBUG ADDED =====
       try {
-        const parsed = JSON.parse(raw) as {
-          event?: string;
-          start?: { callSid?: string };
-        };
-
-        // ===== DEBUG ADDED =====
+        const parsed = JSON.parse(raw) as { event?: string };
         if (parsed.event && parsed.event !== "media") {
           console.log("[ws] non-media event received:", raw.slice(0, 500));
-        }
-        // ===== DEBUG ADDED =====
-
-        if (parsed.event === "start" && parsed.start?.callSid) {
-          const callSid = parsed.start.callSid;
-          Call.findOne({ exotelCallSid: callSid })
-            .select("script")
-            .lean()
-            .then((doc) => {
-              if (doc?.script) {
-                (ws as typeof ws & { _callScript?: string })._callScript =
-                  doc.script;
-              }
-            })
-            .catch(() => undefined);
         }
       } catch {
         // not JSON — ignore
       }
+      // ===== DEBUG ADDED =====
 
+      // NOTE: the old code parsed `parsed.start?.callSid` here and did its
+      // own Mongo lookup before handing off to the bridge. That's removed:
+      // (a) Exotel actually sends call_sid (snake_case), not callSid, so
+      //     that lookup never fired in the first place, and
+      // (b) the bridge now owns the script lookup itself (via the resolver
+      //     passed in above), keyed off the correctly-named field, and
+      //     guarantees it resolves before session.update is sent.
       bridge.handleExotelMessage(raw);
     });
 
@@ -103,7 +110,6 @@ async function bootstrap() {
       process.exit(0);
     });
   };
-
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
