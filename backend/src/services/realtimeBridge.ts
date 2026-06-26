@@ -4,7 +4,7 @@ import { env } from "../config/env";
 
 // ✅ Fixed: correct model name
 const OPENAI_REALTIME_URL =
-  "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
+  "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
 
 type ExotelEvent =
   | { event: "connected"; protocol: string; version: string }
