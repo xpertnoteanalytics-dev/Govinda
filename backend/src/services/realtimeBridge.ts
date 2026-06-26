@@ -2,8 +2,6 @@
 import WebSocket from "ws";
 import { env } from "../config/env";
 
-// ===== CHANGED: model now comes from env instead of being hardcoded;
-// removed deprecated beta URL constant =====
 const OPENAI_REALTIME_URL =
   `wss://api.openai.com/v1/realtime?model=${env.openai.model}`;
 
@@ -12,13 +10,14 @@ type ExotelEvent =
   | {
       event: "start";
       start: {
-        callSid: string;
-        streamSid: string;
+        // ===== CHANGED: Exotel uses snake_case field names =====
+        call_sid: string;
+        stream_sid: string;
         customParameters?: Record<string, string>;
       };
     }
   | { event: "media"; media: { chunk: number; timestamp: string; payload: string } }
-  | { event: "stop"; stop: { callSid: string } }
+  | { event: "stop"; stop: { call_sid: string } }
   | { event: "mark"; mark: { name: string } }
   | { event: "error"; error: { code: string; message: string } };
 
@@ -67,35 +66,47 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
         Authorization: `Bearer ${env.openai.apiKey}`,
-        // ===== CHANGED: removed "OpenAI-Beta": "realtime=v1" header.
-        // That header was routing requests to the deprecated beta endpoint
-        // which returned beta_api_shape_disabled. The GA API uses
-        // Bearer token auth only. =====
+        // No OpenAI-Beta header — GA API uses Bearer token only
       },
     });
 
     openAiWs.on("open", () => {
       console.log("[bridge] OpenAI Realtime connected");
 
+      // ===== CHANGED: GA API session.update schema =====
+      // - session.type is now required and must be "realtime"
+      // - audio formats are objects ({ type: "audio/pcmu" }), not strings
+      // - audio config is nested under session.audio.input and session.audio.output
+      // - input_audio_transcription moves to session.audio.input.transcription
+      // - turn_detection moves to session.audio.input.turn_detection
+      // - modalities, instructions, voice remain at session top level
       sendToOpenAi({
         type: "session.update",
         session: {
+          type: "realtime",
           modalities: ["audio", "text"],
           instructions: script
             ? `You are an AI calling assistant for RKG Labs healthcare. Your script: ${script}. Be concise, warm, and professional. Speak in clear English or Hindi based on the caller.`
             : "You are a helpful AI calling assistant for RKG Labs healthcare. Be concise, warm, and professional. Keep responses short since this is a phone call.",
           voice: "alloy",
-          input_audio_format: "g711_ulaw",
-          output_audio_format: "g711_ulaw",
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
+          audio: {
+            input: {
+              format: { type: "audio/pcmu" },
+              transcription: { model: "whisper-1" },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 500,
+              },
+            },
+            output: {
+              format: { type: "audio/pcmu" },
+            },
           },
         },
       });
+      // ===== END CHANGED =====
     });
 
     openAiWs.on("message", (raw: WebSocket.RawData) => {
@@ -126,7 +137,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         return;
       }
 
-      if (type === "response.audio.delta") {
+      // ===== CHANGED: GA API uses response.output_audio.delta for audio streaming =====
+      // Keep response.audio.delta as fallback for gpt-4o-realtime-preview compatibility
+      if (type === "response.output_audio.delta" || type === "response.audio.delta") {
         const delta = event.delta as string | undefined;
         if (delta) {
           sendToExotel({
@@ -138,7 +151,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         return;
       }
 
-      if (type === "response.audio.done") {
+      // ===== CHANGED: GA API uses response.output_audio.done =====
+      // Keep response.audio.done as fallback
+      if (type === "response.output_audio.done" || type === "response.audio.done") {
         sendToExotel({
           event: "mark",
           streamSid,
@@ -196,8 +211,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       case "start":
-        callSid   = evt.start.callSid;
-        streamSid = evt.start.streamSid ?? evt.start.callSid;
+        // ===== CHANGED: read snake_case fields from Exotel start payload =====
+        callSid   = evt.start.call_sid;
+        streamSid = evt.start.stream_sid ?? evt.start.call_sid;
         console.log("[bridge] stream started — callSid:", callSid, "streamSid:", streamSid);
         break;
 
@@ -215,7 +231,8 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
       }
 
       case "stop":
-        console.log("[bridge] Exotel stream stopped — callSid:", evt.stop.callSid);
+        // ===== CHANGED: read snake_case call_sid from stop event =====
+        console.log("[bridge] Exotel stream stopped — callSid:", evt.stop.call_sid);
         if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
           sendToOpenAi({ type: "input_audio_buffer.commit" });
           openAiWs.close(1000, "call ended");
