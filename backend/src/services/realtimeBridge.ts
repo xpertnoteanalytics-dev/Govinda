@@ -4,7 +4,7 @@ import { env } from "../config/env";
 
 // ✅ Fixed: correct model name
 const OPENAI_REALTIME_URL =
-  "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
+  "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
 
 type ExotelEvent =
   | { event: "connected"; protocol: string; version: string }
@@ -57,6 +57,10 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
   // ─── OpenAI connection ───────────────────────────────────────────
 
   function connectOpenAi() {
+    // ===== DEBUG ADDED =====
+    console.log("[bridge] connectOpenAi() called — key present:", env.openai.apiKey ? `yes (len=${env.openai.apiKey.length})` : "NO — KEY IS EMPTY", "url:", OPENAI_REALTIME_URL);
+    // ===== DEBUG ADDED =====
+
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
         Authorization: `Bearer ${env.openai.apiKey}`,
@@ -170,7 +174,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     });
 
     openAiWs.on("error", (err) => {
-      console.error("[bridge] OpenAI Realtime WS error:", err.message);
+      // ===== DEBUG ADDED =====
+      console.error("[bridge] OpenAI WS error:", err.message, JSON.stringify(err));
+      // ===== DEBUG ADDED =====
     });
   }
 
@@ -234,7 +240,9 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       default:
-        console.log("[bridge] unknown Exotel event:", (evt as { event: string }).event);
+        // ===== DEBUG ADDED =====
+        console.log("[bridge] unknown Exotel event:", (evt as { event: string }).event, "raw:", raw.slice(0, 300));
+        // ===== DEBUG ADDED =====
     }
   }
 
