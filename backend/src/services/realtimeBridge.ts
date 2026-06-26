@@ -18,6 +18,51 @@ const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${env.openai
 const AUDIO_QUEUE_MAX = 500;
 
 // ---------------------------------------------------------------------------
+// G.711 μ-law → 16-bit linear PCM (slin16) decoder
+// ---------------------------------------------------------------------------
+//
+// OpenAI outputs audio/pcmu (G.711 μ-law, 8 kHz, base64-encoded).
+// Exotel Voicebot Applet expects raw/slin (16-bit PCM little-endian, 8 kHz,
+// base64-encoded) for outbound playback — confirmed in official Exotel docs:
+//   "All audio payloads are sent as raw/slin (16-bit, 8kHz, mono PCM
+//    little-endian) encoded in base64. The same is expected from the client
+//    in the case of bi-directional streams."
+//   (developer.exotel.com/docs/agentstream/stream-voicebot-applet)
+//
+// ITU-T G.711 μ-law decode — standard algorithm, no external dependency.
+// Each input byte is one μ-law sample; each output is one int16 LE sample.
+
+/** Decode a single μ-law byte to a 16-bit signed linear PCM sample. */
+function ulawToLinear(ulaw: number): number {
+  // Invert all bits (μ-law bytes are transmitted inverted per ITU-T G.711)
+  ulaw = ~ulaw & 0xff;
+  const sign     = ulaw & 0x80;
+  const exponent = (ulaw >> 4) & 0x07;
+  const mantissa = ulaw & 0x0f;
+  // Reconstruct the magnitude
+  let sample = ((mantissa << 3) | 0x84) << exponent;
+  // Bias removal: subtract the bias that was added during encoding
+  sample -= 0x84;
+  return sign !== 0 ? -sample : sample;
+}
+
+/**
+ * Convert a base64-encoded PCMU (G.711 μ-law) buffer to a base64-encoded
+ * raw slin16 (16-bit signed PCM, little-endian) buffer.
+ *
+ * Input:  N bytes of μ-law data (one sample per byte)
+ * Output: 2N bytes of linear PCM data (two bytes per sample, little-endian)
+ */
+function pcmuBase64ToSlin16Base64(pcmuBase64: string): string {
+  const pcmu   = Buffer.from(pcmuBase64, "base64");
+  const slin16 = Buffer.allocUnsafe(pcmu.length * 2);
+  for (let i = 0; i < pcmu.length; i++) {
+    slin16.writeInt16LE(ulawToLinear(pcmu[i]!), i * 2);
+  }
+  return slin16.toString("base64");
+}
+
+// ---------------------------------------------------------------------------
 // Exotel event types
 // ---------------------------------------------------------------------------
 
@@ -212,17 +257,20 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
       // ── Audio output (the core path — forwarded to Exotel) ──────────────
 
       if (type === "response.output_audio.delta") {
-        // GA event name (verified). Audio bytes are in event.delta (base64).
-        // Forward immediately to Exotel as a media event.
+        // OpenAI delivers base64-encoded PCMU (G.711 μ-law, 8 kHz).
+        // Exotel Voicebot Applet requires base64-encoded slin16
+        // (16-bit PCM little-endian, 8 kHz). Transcode before forwarding.
         const delta = event.delta as string | undefined;
         if (delta) {
+          const slin16Payload = pcmuBase64ToSlin16Base64(delta);
           console.log(
-            `[bridge][response.output_audio.delta] forwarding ${delta.length} base64 chars → Exotel`
+            `[bridge][response.output_audio.delta] pcmu ${delta.length} b64chars` +
+            ` → slin16 ${slin16Payload.length} b64chars → Exotel`
           );
           sendToExotel({
             event: "media",
-            streamSid,
-            media: { payload: delta },
+            stream_sid: streamSid,          // Exotel protocol key: stream_sid
+            media: { payload: slin16Payload },
           });
         }
         return;
@@ -234,7 +282,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         console.log("[bridge][response.output_audio.done] AI audio turn complete → sending mark");
         sendToExotel({
           event: "mark",
-          streamSid,
+          stream_sid: streamSid,            // Exotel protocol key: stream_sid
           mark: { name: "ai_done" },
         });
         return;
