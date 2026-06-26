@@ -2,8 +2,10 @@
 import WebSocket from "ws";
 import { env } from "../config/env";
 
+// ===== CHANGED: model now comes from env instead of being hardcoded;
+// removed deprecated beta URL constant =====
 const OPENAI_REALTIME_URL =
-  "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
+  `wss://api.openai.com/v1/realtime?model=${env.openai.model}`;
 
 type ExotelEvent =
   | { event: "connected"; protocol: string; version: string }
@@ -55,9 +57,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
 
   // ─── OpenAI connection ───────────────────────────────────────────
 
-  // ===== CHANGED: connectOpenAi() is now called immediately at the bottom
-  // of createRealtimeBridge() instead of waiting for the Exotel start event.
-  // Everything inside this function is unchanged. =====
   function connectOpenAi() {
     console.log(
       "[bridge] connectOpenAi() called — key present:",
@@ -68,7 +67,10 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
         Authorization: `Bearer ${env.openai.apiKey}`,
-        "OpenAI-Beta": "realtime=v1",
+        // ===== CHANGED: removed "OpenAI-Beta": "realtime=v1" header.
+        // That header was routing requests to the deprecated beta endpoint
+        // which returned beta_api_shape_disabled. The GA API uses
+        // Bearer token auth only. =====
       },
     });
 
@@ -194,8 +196,6 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
         break;
 
       case "start":
-        // ===== CHANGED: start event now only captures metadata.
-        // connectOpenAi() is no longer called here. =====
         callSid   = evt.start.callSid;
         streamSid = evt.start.streamSid ?? evt.start.callSid;
         console.log("[bridge] stream started — callSid:", callSid, "streamSid:", streamSid);
@@ -254,8 +254,7 @@ export function createRealtimeBridge(exotelWs: WebSocket, script?: string) {
     audioQueue.length = 0;
   }
 
-  // ===== CHANGED: connect to OpenAI immediately on bridge creation,
-  // do not wait for the Exotel start event. =====
+  // Connect to OpenAI immediately on bridge creation
   connectOpenAi();
 
   return { handleExotelMessage, destroy };
