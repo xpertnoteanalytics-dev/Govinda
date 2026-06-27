@@ -1,4 +1,17 @@
 // src/services/callService.ts
+//
+// Public API for the call subsystem.
+//
+// Changes from the original:
+//   • generateCallingScript() is replaced by generateConversationGuide()
+//     and convertUserScript().
+//   • Both new functions return a serialised ConversationGuide JSON string
+//     that is stored in the existing Call.script field (no schema change needed).
+//   • initiateCall() accepts a pre-built guide string OR auto-generates one
+//     if neither guide nor script is provided.
+//   • Everything else (initiateCall provider logic, listCalls, analytics,
+//     webhook handler, serializeCall) is unchanged.
+
 import { Call } from "../models";
 import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
@@ -6,28 +19,106 @@ import { resolveObjectIdString } from "../utils/resolveId";
 import * as exotelService from "./exotelService";
 import type { ICall } from "../models/Call";
 import {
-  generateAiCallScript,
-  type CallScriptType,
-} from "./callScriptGeneration";
+  generateGuide,
+  convertScriptToGuide,
+  serializeGuide,
+  type CallType,
+  type GenerateGuideParams,
+  type ConvertScriptParams,
+} from "./conversationGuideService";
 
-export { type CallScriptType };
+// Re-export CallType so existing callers of callService don't need to change
+// their import paths.
+export { type CallType };
 
+// ---------------------------------------------------------------------------
+// Guide generation — USE CASE 1
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a ConversationGuide from scratch using Gemini.
+ * Replaces the old generateCallingScript() function.
+ * Returns a serialised JSON string suitable for storing in Call.script.
+ */
+export async function generateConversationGuide(params: {
+  placeName: string;
+  category: string;
+  purpose?: string;
+  organizationName?: string;
+  callType?: CallType;
+  additionalContext?: string;
+}): Promise<string> {
+  const guideParams: GenerateGuideParams = {
+    recipientName: params.placeName,
+    recipientCategory: params.category,
+    callType: params.callType ?? "pharmacy_inquiry",
+    purpose: params.purpose,
+    organizationName: params.organizationName,
+    additionalContext: params.additionalContext,
+  };
+  const guide = await generateGuide(guideParams);
+  return serializeGuide(guide);
+}
+
+// ---------------------------------------------------------------------------
+// User script conversion — USE CASE 2
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a user-written script into a ConversationGuide.
+ * The original script wording is discarded — only business intent is preserved.
+ * Returns a serialised JSON string suitable for storing in Call.script.
+ */
+export async function convertUserScript(params: {
+  userScript: string;
+  placeName: string;
+  category: string;
+  organizationName?: string;
+  callType?: CallType;
+}): Promise<string> {
+  const convertParams: ConvertScriptParams = {
+    userScript: params.userScript,
+    recipientName: params.placeName,
+    recipientCategory: params.category,
+    callType: params.callType ?? "pharmacy_inquiry",
+    organizationName: params.organizationName,
+  };
+  const guide = await convertScriptToGuide(convertParams);
+  return serializeGuide(guide);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy alias — keeps existing callers working during migration
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated Use generateConversationGuide() instead.
+ * Kept for backward compatibility with existing route handlers.
+ * Will be removed in a future release.
+ */
 export async function generateCallingScript(params: {
   placeName: string;
   category: string;
   purpose?: string;
   organizationName?: string;
-  scriptType?: CallScriptType;
+  scriptType?: CallType;
 }): Promise<string> {
-  const scriptType: CallScriptType = params.scriptType ?? "pharmacy_inquiry";
-  return generateAiCallScript({
+  console.warn(
+    "[callService] generateCallingScript() is deprecated. " +
+    "Use generateConversationGuide() instead."
+  );
+  return generateConversationGuide({
     placeName: params.placeName,
     category: params.category,
     purpose: params.purpose,
     organizationName: params.organizationName,
-    scriptType,
+    callType: params.scriptType,
   });
 }
+
+// ---------------------------------------------------------------------------
+// initiateCall — unchanged provider logic, guide-aware script storage
+// ---------------------------------------------------------------------------
 
 export async function initiateCall(params: {
   tenantId: string;
@@ -36,12 +127,45 @@ export async function initiateCall(params: {
   placeName: string;
   phoneNumber: string;
   category?: string;
+  /** Pre-built guide JSON or legacy script string. If omitted, auto-generated. */
   script?: string;
-  scriptType?: CallScriptType;
+  /** Whether script is a user-written script that needs conversion. */
+  convertScript?: boolean;
+  scriptType?: CallType;
 }) {
   const normalized = params.phoneNumber.replace(/\s/g, "");
   if (!/^\+?[\d]{8,15}$/.test(normalized)) {
     throw new AppError(400, "Invalid phone number", "INVALID_PHONE");
+  }
+
+  // Determine the guide string to store
+  let guideJson: string | undefined = params.script;
+
+  if (params.script && params.convertScript) {
+    // User provided a hand-written script — convert it to a guide
+    try {
+      guideJson = await convertUserScript({
+        userScript: params.script,
+        placeName: params.placeName,
+        category: params.category ?? "Healthcare",
+        callType: params.scriptType,
+      });
+    } catch (err) {
+      console.error("[callService] script conversion failed — using raw script:", err);
+      // Fall through: guideJson stays as the raw script (legacy compat)
+    }
+  } else if (!params.script) {
+    // No script provided — auto-generate a guide
+    try {
+      guideJson = await generateConversationGuide({
+        placeName: params.placeName,
+        category: params.category ?? "Healthcare",
+        callType: params.scriptType,
+      });
+    } catch (err) {
+      console.error("[callService] guide generation failed — proceeding without guide:", err);
+      guideJson = undefined;
+    }
   }
 
   const call = await Call.create({
@@ -51,7 +175,7 @@ export async function initiateCall(params: {
     placeName: params.placeName,
     phoneNumber: normalized,
     category: params.category,
-    script: params.script,
+    script: guideJson,           // stores the ConversationGuide JSON (or legacy text)
     scriptType: params.scriptType,
     status: "queued",
     direction: "outbound",
@@ -98,6 +222,10 @@ export async function initiateCall(params: {
 
   return serializeCall(call);
 }
+
+// ---------------------------------------------------------------------------
+// Read operations — unchanged
+// ---------------------------------------------------------------------------
 
 type PopulatedUser = { _id: unknown; firstName?: string; lastName?: string };
 
@@ -155,16 +283,8 @@ export async function getCallAnalytics(tenantId: string, userId: string) {
 
   const [total, completed, failed, recent] = await Promise.all([
     Call.countDocuments({ tenantId: tenantOid, userId: userOid }),
-    Call.countDocuments({
-      tenantId: tenantOid,
-      userId: userOid,
-      status: "completed",
-    }),
-    Call.countDocuments({
-      tenantId: tenantOid,
-      userId: userOid,
-      status: "failed",
-    }),
+    Call.countDocuments({ tenantId: tenantOid, userId: userOid, status: "completed" }),
+    Call.countDocuments({ tenantId: tenantOid, userId: userOid, status: "failed" }),
     Call.find({ tenantId: tenantOid, userId: userOid })
       .sort({ createdAt: -1 })
       .limit(5)
@@ -195,6 +315,10 @@ export async function getCallAnalytics(tenantId: string, userId: string) {
     }),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Webhook handler — unchanged
+// ---------------------------------------------------------------------------
 
 function mapExotelTerminalStatus(
   status: string | undefined
@@ -240,31 +364,20 @@ export async function applyExotelStatusCallback(
   const status = mapExotelTerminalStatus(
     typeof payload.Status === "string" ? payload.Status : undefined
   );
-  if (status) {
-    call.status = status;
-  }
+  if (status) call.status = status;
 
   const convDuration = payload.ConversationDuration;
   if (typeof convDuration === "number") {
     call.durationSeconds = convDuration;
-  } else if (
-    typeof convDuration === "string" &&
-    /^\d+$/.test(convDuration)
-  ) {
+  } else if (typeof convDuration === "string" && /^\d+$/.test(convDuration)) {
     call.durationSeconds = parseInt(convDuration, 10);
   }
 
   const recording =
-    typeof payload.RecordingUrl === "string"
-      ? payload.RecordingUrl
-      : undefined;
-  if (recording) {
-    call.recordingUrl = recording;
-  }
+    typeof payload.RecordingUrl === "string" ? payload.RecordingUrl : undefined;
+  if (recording) call.recordingUrl = recording;
 
-  if (!call.exotelCallSid && callSid) {
-    call.exotelCallSid = callSid;
-  }
+  if (!call.exotelCallSid && callSid) call.exotelCallSid = callSid;
 
   await call.save();
   return { ok: true as const, callId: call._id.toString() };
