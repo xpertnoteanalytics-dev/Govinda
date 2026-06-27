@@ -1,4 +1,17 @@
 // src/services/realtimeBridge.ts
+//
+// Responsibility: stream audio between Exotel and OpenAI Realtime.
+//
+// This file contains ZERO business logic and ZERO prompt-writing code.
+// It receives a fully-formed `instructions` string from outside (via the
+// GuideResolver) and forwards it to OpenAI as-is.
+//
+// The separation is strict:
+//   • ConversationGuide knowledge lives in conversationGuideService.ts
+//   • Prompt rendering lives in promptBuilder.ts
+//   • Audio streaming lives here (realtimeBridge.ts)
+//
+// DO NOT add prompt generation, script handling, or business logic here.
 
 import WebSocket from "ws";
 import { env } from "../config/env";
@@ -23,36 +36,21 @@ const AUDIO_QUEUE_MAX = 500;
 //
 // OpenAI outputs audio/pcmu (G.711 μ-law, 8 kHz, base64-encoded).
 // Exotel Voicebot Applet expects raw/slin (16-bit PCM little-endian, 8 kHz,
-// base64-encoded) for outbound playback — confirmed in official Exotel docs:
-//   "All audio payloads are sent as raw/slin (16-bit, 8kHz, mono PCM
-//    little-endian) encoded in base64. The same is expected from the client
-//    in the case of bi-directional streams."
-//   (developer.exotel.com/docs/agentstream/stream-voicebot-applet)
+// base64-encoded) for outbound playback — confirmed in official Exotel docs.
 //
 // ITU-T G.711 μ-law decode — standard algorithm, no external dependency.
 // Each input byte is one μ-law sample; each output is one int16 LE sample.
 
-/** Decode a single μ-law byte to a 16-bit signed linear PCM sample. */
 function ulawToLinear(ulaw: number): number {
-  // Invert all bits (μ-law bytes are transmitted inverted per ITU-T G.711)
   ulaw = ~ulaw & 0xff;
   const sign     = ulaw & 0x80;
   const exponent = (ulaw >> 4) & 0x07;
   const mantissa = ulaw & 0x0f;
-  // Reconstruct the magnitude
   let sample = ((mantissa << 3) | 0x84) << exponent;
-  // Bias removal: subtract the bias that was added during encoding
   sample -= 0x84;
   return sign !== 0 ? -sample : sample;
 }
 
-/**
- * Convert a base64-encoded PCMU (G.711 μ-law) buffer to a base64-encoded
- * raw slin16 (16-bit signed PCM, little-endian) buffer.
- *
- * Input:  N bytes of μ-law data (one sample per byte)
- * Output: 2N bytes of linear PCM data (two bytes per sample, little-endian)
- */
 function pcmuBase64ToSlin16Base64(pcmuBase64: string): string {
   const pcmu   = Buffer.from(pcmuBase64, "base64");
   const slin16 = Buffer.allocUnsafe(pcmu.length * 2);
@@ -85,20 +83,30 @@ type ExotelEvent =
   | { event: "error"; error: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
-// Bridge factory
+// GuideResolver type
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves the calling script for a given Exotel call_sid.
- * Supplied by the caller (index.ts) so this module stays decoupled from
- * the DB layer. Must resolve (or reject) before the OpenAI session is
- * configured — the bridge will wait on it.
+ * Resolves the fully-rendered OpenAI `instructions` string for a given
+ * Exotel call_sid.
+ *
+ * Supplied by index.ts. The resolver is responsible for:
+ *   1. Looking up the Call document in MongoDB (existing logic).
+ *   2. Deserialising the stored ConversationGuide.
+ *   3. Calling promptBuilder.buildRealtimePrompt() to render the prompt.
+ *   4. Returning the rendered string (or undefined for fallback).
+ *
+ * RealtimeBridge never touches MongoDB, ConversationGuide, or prompt logic.
  */
-export type ScriptResolver = (callSid: string) => Promise<string | undefined>;
+export type GuideResolver = (callSid: string) => Promise<string | undefined>;
+
+// ---------------------------------------------------------------------------
+// Bridge factory
+// ---------------------------------------------------------------------------
 
 export function createRealtimeBridge(
   exotelWs: WebSocket,
-  resolveScript: ScriptResolver
+  resolveInstructions: GuideResolver
 ) {
   let openAiWs: WebSocket | null = null;
   let streamSid = "";
@@ -106,15 +114,13 @@ export function createRealtimeBridge(
 
   /**
    * True only after session.updated is received.
-   * session.created alone does NOT mean the session is configured —
-   * we must wait for the server to acknowledge our session.update.
+   * session.created alone does NOT mean the session is configured.
    */
   let sessionReady = false;
 
   /**
    * True once we've started (or finished) connecting to OpenAI.
-   * Guards against double-connecting if "start" somehow fires twice
-   * or media arrives in an unexpected order.
+   * Guards against double-connecting.
    */
   let openAiConnectStarted = false;
 
@@ -135,7 +141,6 @@ export function createRealtimeBridge(
     }
   }
 
-  /** Drain buffered audio chunks into the OpenAI input buffer. */
   function flushAudioQueue(): void {
     if (!openAiWs || openAiWs.readyState !== WebSocket.OPEN) return;
     const count = audioQueue.length;
@@ -151,22 +156,28 @@ export function createRealtimeBridge(
   // ─── OpenAI connection ────────────────────────────────────────────────────
 
   /**
-   * Connects to the OpenAI Realtime API and sends session.update using the
-   * given script. This is NOT called automatically on bridge creation —
-   * it is only invoked once we have a callSid/streamSid from Exotel's
-   * "start" event AND the script lookup (DB call) has resolved. This
-   * guarantees session.update is never sent with a stale/missing script.
+   * Connect to OpenAI Realtime and configure the session with the given
+   * instructions string. Called only after the guide resolver has settled.
    *
-   * Audio frames that arrive from Exotel before this resolves are queued
-   * by handleExotelMessage() (via the existing audioQueue) and flushed
-   * once the OpenAI session reaches session.updated.
+   * @param instructions — The fully-rendered prompt from promptBuilder.
+   *                        If undefined, a minimal fallback string is used.
    */
-  function connectOpenAi(script: string | undefined): void {
+  function connectOpenAi(instructions: string | undefined): void {
     if (openAiConnectStarted) {
       console.warn("[bridge] connectOpenAi() called more than once — ignoring");
       return;
     }
     openAiConnectStarted = true;
+
+    // If no instructions were resolved, use the absolute minimum fallback.
+    // This should only happen if both the DB lookup and the guide service
+    // fallback failed — which should never occur in normal operation.
+    const finalInstructions =
+      instructions ??
+      `You are a professional healthcare executive from Govinda AI.
+       Be warm, helpful, and concise. Keep responses to 2–3 sentences.
+       Ask one question at a time. Wait for the customer to reply.
+       Mirror the customer's language (English, Hindi, or Hinglish).`;
 
     console.log(
       "[bridge] connectOpenAi() — key present:",
@@ -174,13 +185,11 @@ export function createRealtimeBridge(
         ? `yes (len=${env.openai.apiKey.length})`
         : "NO — KEY IS EMPTY",
       "| url:", OPENAI_REALTIME_URL,
-      "| script:", script ? `provided (len=${script.length})` : "none (using default instructions)"
+      "| instructions length:", finalInstructions.length
     );
 
     openAiWs = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {
-        // GA Realtime API: Bearer token only.
-        // Do NOT include OpenAI-Beta header — that is the beta-only header.
         Authorization: `Bearer ${env.openai.apiKey}`,
       },
     });
@@ -190,54 +199,59 @@ export function createRealtimeBridge(
     openAiWs.on("open", () => {
       console.log("[bridge] OpenAI Realtime WebSocket connected");
 
-      // Send session.update immediately on open.
-      // The server will respond with session.created (state acknowledged)
-      // and then session.updated (configuration applied → we are truly ready).
-      //
-      // GA session.update schema (verified from official docs):
-      //   session.type            = "realtime"                (required, always this value)
-      //   session.output_modalities = ["audio"]              (top-level, not "modalities")
-      //   session.instructions    = string                   (system prompt)
-      //   session.audio.input.format = { type: "audio/pcmu" } (PCMU object, not a string)
-      //   session.audio.input.transcription.model            (optional, enables user transcript)
-      //   session.audio.input.turn_detection                 (server_vad config)
-      //   session.audio.input.turn_detection.create_response = true  (auto-respond after VAD)
-      //   session.audio.input.turn_detection.interrupt_response = true
-      //   session.audio.output.format = { type: "audio/pcmu" } (PCMU object, not a string)
-      //   session.audio.output.voice  = "marin"              (voice under audio.output, not top-level)
       sendToOpenAi({
         type: "session.update",
         session: {
           type: "realtime",
           output_modalities: ["audio"],
-          instructions: script
-            ? `You are an AI calling assistant for RKG Labs healthcare. Your script: ${script}. Be concise, warm, and professional. Speak in clear English or Hindi based on the caller.`
-            : "You are a helpful AI calling assistant for RKG Labs healthcare. Be concise, warm, and professional. Keep responses short since this is a phone call.",
+
+          // The rendered prompt from promptBuilder. Contains all call knowledge,
+          // conversation rules, language rules, and turn-taking instructions.
+          instructions: finalInstructions,
+
           audio: {
             input: {
               // G.711 μ-law (PCMU) — format is an object in GA, NOT a string
               format: { type: "audio/pcmu" },
-              // Input transcription (user speech → text, runs asynchronously)
               transcription: {
                 model: "whisper-1",
               },
-              // Server VAD: model detects speech boundaries automatically
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 500,
-                // Auto-create a response when VAD detects end of user speech
+
+                // 0.4: slightly more sensitive than default (0.5).
+                // Catches softer speech onsets common in phone calls.
+                threshold: 0.4,
+
+                // 200ms: shorter than default (300ms).
+                // Captures more of the start of words.
+                prefix_padding_ms: 200,
+
+                // 600ms: slightly longer than default (500ms).
+                // Lets the customer pause mid-thought without cutting them off.
+                silence_duration_ms: 600,
+
+                // Auto-create AI response when VAD detects end of customer speech.
+                // This drives the listen → respond loop without manual triggers.
                 create_response: true,
-                // Cancel ongoing AI response if user starts speaking
+
+                // INTERRUPTION: cancel the AI's audio output the instant the
+                // customer starts speaking. This is the core of interruption handling.
+                // The bridge does NOT need to send response.cancel manually —
+                // OpenAI handles it internally when this flag is true.
                 interrupt_response: true,
               },
             },
             output: {
-              // G.711 μ-law (PCMU) output — format is an object in GA, NOT a string
               format: { type: "audio/pcmu" },
-              // voice goes under audio.output in GA (NOT at session top-level)
-              voice: "marin",
+
+              // "ash" — deepest natural male voice in GA OpenAI Realtime API.
+              // Official GA voice list: alloy, ash, ballad, coral, echo,
+              // sage, shimmer, verse.
+              // "ash" is male and natural for professional phone calls.
+              // "coral", "sage", "shimmer" are female.
+              // "marin" is NOT a valid GA voice name.
+              voice: "ash",
             },
           },
         },
@@ -260,52 +274,38 @@ export function createRealtimeBridge(
       // ── Session lifecycle ────────────────────────────────────────────────
 
       if (type === "session.created") {
-        // Server has acknowledged the connection. The session is NOT yet
-        // configured — session.update is still being processed. Wait for
-        // session.updated before marking ready.
         console.log(
           "[bridge][session.created] session acknowledged, waiting for session.updated"
         );
-        console.log("[bridge][session.created]", JSON.stringify(event, null, 2));
         return;
       }
 
       if (type === "session.updated") {
-        // Server has applied our session.update. Session is now fully
-        // configured and ready to accept audio and trigger responses.
         console.log(
-          "[bridge][session.updated] session is READY — flushing audio queue and triggering greeting"
+          "[bridge][session.updated] session READY — flushing queue and triggering greeting"
         );
-        console.log("[bridge][session.updated]", JSON.stringify(event, null, 2));
-
         sessionReady = true;
-
-        // Drain any audio that arrived before the session was ready
         flushAudioQueue();
 
-        // Send an initial response.create to have the AI speak first (greeting).
-        // With server_vad + create_response:true, subsequent turns are automatic.
-        // response.create payload: no required fields beyond type.
+        // Trigger the AI's opening greeting. This is the ONLY manual
+        // response.create we send — all subsequent turns are triggered
+        // automatically by create_response: true in the VAD config.
+        // The model generates a natural opening based on the instructions
+        // (call objective, caller identity, recipient name) — never a
+        // hardcoded greeting.
         sendToOpenAi({ type: "response.create" });
         return;
       }
 
-      // ── Audio output (the core path — forwarded to Exotel) ──────────────
+      // ── Audio output → Exotel ────────────────────────────────────────────
 
       if (type === "response.output_audio.delta") {
-        // OpenAI delivers base64-encoded PCMU (G.711 μ-law, 8 kHz).
-        // Exotel Voicebot Applet requires base64-encoded slin16
-        // (16-bit PCM little-endian, 8 kHz). Transcode before forwarding.
         const delta = event.delta as string | undefined;
         if (delta) {
           const slin16Payload = pcmuBase64ToSlin16Base64(delta);
-          console.log(
-            `[bridge][response.output_audio.delta] pcmu ${delta.length} b64chars` +
-            ` → slin16 ${slin16Payload.length} b64chars → Exotel`
-          );
           sendToExotel({
             event: "media",
-            stream_sid: streamSid,          // Exotel protocol key: stream_sid
+            stream_sid: streamSid,
             media: { payload: slin16Payload },
           });
         }
@@ -313,60 +313,49 @@ export function createRealtimeBridge(
       }
 
       if (type === "response.output_audio.done") {
-        // GA event name (verified). Audio turn complete — no audio data in this event.
-        // Signal Exotel that this AI turn has finished.
-        console.log("[bridge][response.output_audio.done] AI audio turn complete → sending mark");
+        console.log("[bridge][response.output_audio.done] AI audio turn complete → mark");
         sendToExotel({
           event: "mark",
-          stream_sid: streamSid,            // Exotel protocol key: stream_sid
+          stream_sid: streamSid,
           mark: { name: "ai_done" },
         });
         return;
       }
 
-      // ── AI speech transcript ─────────────────────────────────────────────
+      // ── AI speech transcript (informational) ─────────────────────────────
 
       if (type === "response.output_audio_transcript.delta") {
-        // Incremental AI speech transcript — informational only
         const delta = event.delta as string | undefined;
-        if (delta) {
-          process.stdout.write(`[bridge][ai-transcript-delta] ${delta}`);
-        }
+        if (delta) process.stdout.write(`[bridge][ai-tx] ${delta}`);
         return;
       }
 
       if (type === "response.output_audio_transcript.done") {
         const transcript = event.transcript as string | undefined;
         console.log(
-          `\n[bridge][ai-transcript-done] callSid=${callSid} | transcript="${transcript ?? ""}"`
+          `\n[bridge][ai-tx-done] callSid=${callSid} | "${transcript ?? ""}"`
         );
         return;
       }
 
-      // ── User speech transcript ───────────────────────────────────────────
+      // ── User speech transcript (informational) ───────────────────────────
 
       if (type === "conversation.item.input_audio_transcription.delta") {
-        // Incremental user speech transcript — informational only
         const delta = event.delta as string | undefined;
-        if (delta) {
-          process.stdout.write(`[bridge][user-transcript-delta] ${delta}`);
-        }
+        if (delta) process.stdout.write(`[bridge][user-tx] ${delta}`);
         return;
       }
 
       if (type === "conversation.item.input_audio_transcription.completed") {
         const transcript = event.transcript as string | undefined;
         console.log(
-          `\n[bridge][user-transcript-done] callSid=${callSid} | transcript="${transcript ?? ""}"`
+          `\n[bridge][user-tx-done] callSid=${callSid} | "${transcript ?? ""}"`
         );
         return;
       }
 
       if (type === "conversation.item.input_audio_transcription.failed") {
-        console.error(
-          "[bridge][user-transcript-failed]",
-          JSON.stringify(event, null, 2)
-        );
+        console.error("[bridge][user-tx-failed]", JSON.stringify(event, null, 2));
         return;
       }
 
@@ -374,22 +363,22 @@ export function createRealtimeBridge(
 
       if (type === "response.created") {
         const responseId = (event.response as Record<string, unknown> | undefined)?.id;
-        console.log(`[bridge][response.created] responseId=${responseId ?? "unknown"}`);
+        console.log(`[bridge][response.created] id=${responseId ?? "?"}`);
         return;
       }
 
       if (type === "response.done") {
         const resp = event.response as Record<string, unknown> | undefined;
-        const status = resp?.status as string | undefined;
-        const usage = resp?.usage;
         console.log(
-          `[bridge][response.done] status=${status ?? "unknown"} | usage=${JSON.stringify(usage)}`
+          `[bridge][response.done] status=${resp?.status ?? "?"} | usage=${JSON.stringify(resp?.usage)}`
         );
         return;
       }
 
       if (type === "response.cancelled") {
-        console.log("[bridge][response.cancelled]", JSON.stringify(event, null, 2));
+        // Expected behaviour: fired when interrupt_response:true cancels the
+        // AI output because the customer started speaking. Not an error.
+        console.log("[bridge][response.cancelled] AI interrupted by customer speech — expected");
         return;
       }
 
@@ -398,98 +387,92 @@ export function createRealtimeBridge(
       if (type === "conversation.item.created") {
         const item = event.item as Record<string, unknown> | undefined;
         console.log(
-          `[bridge][conversation.item.created] id=${item?.id ?? "?"} role=${item?.role ?? "?"} type=${item?.type ?? "?"}`
+          `[bridge][item.created] id=${item?.id ?? "?"} role=${item?.role ?? "?"}`
         );
         return;
       }
 
-      if (type === "conversation.item.retrieved") {
-        console.log("[bridge][conversation.item.retrieved]", JSON.stringify(event, null, 2));
+      if (type === "conversation.item.truncated") {
+        // Expected: fired when AI audio is cut short by an interruption.
+        console.log("[bridge][item.truncated] AI audio truncated — customer interrupted");
         return;
       }
 
-      if (type === "conversation.item.truncated") {
-        console.log("[bridge][conversation.item.truncated]", JSON.stringify(event, null, 2));
+      if (type === "conversation.item.retrieved") {
+        console.log("[bridge][item.retrieved]", JSON.stringify(event, null, 2));
         return;
       }
 
       if (type === "conversation.item.deleted") {
-        console.log("[bridge][conversation.item.deleted]", JSON.stringify(event, null, 2));
+        console.log("[bridge][item.deleted]", JSON.stringify(event, null, 2));
         return;
       }
 
       // ── Input audio buffer lifecycle ─────────────────────────────────────
 
       if (type === "input_audio_buffer.speech_started") {
+        // Customer started speaking. With interrupt_response:true, OpenAI
+        // automatically cancels any in-progress AI response. No manual action needed.
         console.log(
-          `[bridge][input_audio_buffer.speech_started] audio_start_ms=${event.audio_start_ms}`
+          `[bridge][speech_started] customer speaking | audio_start_ms=${event.audio_start_ms}`
         );
         return;
       }
 
       if (type === "input_audio_buffer.speech_stopped") {
+        // Customer stopped speaking. With create_response:true, OpenAI
+        // automatically commits the buffer and creates the next AI response.
         console.log(
-          `[bridge][input_audio_buffer.speech_stopped] audio_end_ms=${event.audio_end_ms}`
+          `[bridge][speech_stopped] customer finished | audio_end_ms=${event.audio_end_ms}`
         );
         return;
       }
 
       if (type === "input_audio_buffer.committed") {
-        console.log(`[bridge][input_audio_buffer.committed] item_id=${event.item_id}`);
+        console.log(`[bridge][buffer.committed] item_id=${event.item_id}`);
         return;
       }
 
       if (type === "input_audio_buffer.cleared") {
-        console.log("[bridge][input_audio_buffer.cleared]");
+        console.log("[bridge][buffer.cleared]");
         return;
       }
 
       if (type === "input_audio_buffer.timeout_triggered") {
-        // Emitted when idle_timeout_ms fires (no speech detected for that duration).
-        console.log(
-          "[bridge][input_audio_buffer.timeout_triggered]",
-          JSON.stringify(event, null, 2)
-        );
+        console.log("[bridge][buffer.timeout]", JSON.stringify(event, null, 2));
         return;
       }
 
-      // ── Output text (if output_modalities includes "text") ───────────────
+      // ── Output text (not expected in audio-only mode) ─────────────────────
 
       if (type === "response.output_text.delta") {
-        // Not expected with output_modalities: ["audio"] only, but log if seen
-        console.log(
-          `[bridge][response.output_text.delta] delta="${event.delta ?? ""}"`
-        );
+        console.log(`[bridge][text.delta] "${event.delta ?? ""}"`);
         return;
       }
 
       if (type === "response.output_text.done") {
-        console.log(
-          `[bridge][response.output_text.done] text="${event.text ?? ""}"`
-        );
+        console.log(`[bridge][text.done] "${event.text ?? ""}"`);
         return;
       }
 
       // ── Rate limits ──────────────────────────────────────────────────────
 
       if (type === "rate_limits.updated") {
-        const limits = event.rate_limits;
-        console.log("[bridge][rate_limits.updated]", JSON.stringify(limits));
+        console.log("[bridge][rate_limits]", JSON.stringify(event.rate_limits));
         return;
       }
 
       // ── Errors ───────────────────────────────────────────────────────────
 
       if (type === "error") {
-        // Log the FULL error payload including all nested fields
         console.error(
-          "[bridge][ERROR] Full OpenAI error event:",
+          "[bridge][ERROR] OpenAI error:",
           JSON.stringify(event, null, 2)
         );
         return;
       }
 
-      // ── Unhandled / future events ─────────────────────────────────────────
+      // ── Unhandled ─────────────────────────────────────────────────────────
 
       console.log(
         `[bridge][unhandled] type="${type}"`,
@@ -498,7 +481,6 @@ export function createRealtimeBridge(
     });
 
     // ── close ─────────────────────────────────────────────────────────────
-    // Registered directly on openAiWs (NOT inside the message handler).
 
     openAiWs.on("close", (code: number, reason: Buffer) => {
       console.log(
@@ -511,14 +493,12 @@ export function createRealtimeBridge(
     });
 
     // ── error ─────────────────────────────────────────────────────────────
-    // Registered directly on openAiWs (NOT inside the message handler).
 
     openAiWs.on("error", (err: Error) => {
       console.error(
-        "[bridge][openai-error] message:", err.message,
+        "[bridge][openai-error]", err.message,
         "| full:", JSON.stringify(err, Object.getOwnPropertyNames(err))
       );
-      // Do not close here — the close event will follow automatically
     });
   }
 
@@ -529,7 +509,7 @@ export function createRealtimeBridge(
     try {
       evt = JSON.parse(raw) as ExotelEvent;
     } catch {
-      console.warn("[bridge][exotel] non-JSON message:", raw.slice(0, 200));
+      console.warn("[bridge][exotel] non-JSON:", raw.slice(0, 200));
       return;
     }
 
@@ -550,22 +530,17 @@ export function createRealtimeBridge(
           "| params:", JSON.stringify(evt.start.customParameters ?? {})
         );
 
-        // Resolve the script BEFORE connecting to OpenAI. This is the fix:
-        // session.update (which carries `instructions`) is only ever sent
-        // once we actually have the script in hand — there is no longer a
-        // window where the OpenAI session gets configured with stale or
-        // default instructions because a DB lookup hadn't finished yet.
-        //
-        // Any Exotel media frames that arrive while this lookup is in
-        // flight are safely queued by the "media" case below and flushed
+        // Resolve the fully-rendered instructions BEFORE connecting to OpenAI.
+        // session.update is only sent once the instructions string is in hand.
+        // Audio that arrives during this async window is queued and flushed
         // once session.updated comes back.
-        resolveScript(callSid)
-          .then((script) => {
-            connectOpenAi(script);
+        resolveInstructions(callSid)
+          .then((instructions) => {
+            connectOpenAi(instructions);
           })
           .catch((err) => {
             console.error(
-              "[bridge][exotel-start] script lookup failed, proceeding with default instructions:",
+              "[bridge][exotel-start] guide resolution failed — using fallback:",
               err instanceof Error ? err.message : err
             );
             connectOpenAi(undefined);
@@ -576,16 +551,12 @@ export function createRealtimeBridge(
       case "media": {
         const payload = evt.media.payload;
         if (sessionReady) {
-          // Session is ready — send directly to OpenAI input buffer
           sendToOpenAi({ type: "input_audio_buffer.append", audio: payload });
         } else {
-          // Session not yet configured (still connecting / awaiting script
-          // resolution / awaiting session.updated) — buffer the chunk.
-          // Drop oldest if the queue is full to prevent unbounded memory growth.
           if (audioQueue.length >= AUDIO_QUEUE_MAX) {
             audioQueue.shift();
             console.warn(
-              `[bridge][exotel-media] audio queue full (cap=${AUDIO_QUEUE_MAX}) — dropping oldest chunk`
+              `[bridge][exotel-media] queue full (cap=${AUDIO_QUEUE_MAX}) — dropping oldest chunk`
             );
           }
           audioQueue.push(payload);
@@ -596,7 +567,6 @@ export function createRealtimeBridge(
       case "stop":
         console.log("[bridge][exotel-stop] callSid:", evt.stop.call_sid);
         if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
-          // Commit any remaining audio, then close cleanly
           sendToOpenAi({ type: "input_audio_buffer.commit" });
           openAiWs.close(1000, "call ended");
         }
@@ -607,10 +577,7 @@ export function createRealtimeBridge(
         break;
 
       case "error":
-        console.error(
-          "[bridge][exotel-error]",
-          JSON.stringify(evt.error)
-        );
+        console.error("[bridge][exotel-error]", JSON.stringify(evt.error));
         if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
           openAiWs.close(1011, "exotel error");
         }
@@ -618,9 +585,9 @@ export function createRealtimeBridge(
 
       default:
         console.log(
-          "[bridge][exotel-unknown] event:",
+          "[bridge][exotel-unknown]",
           (evt as { event: string }).event,
-          "| raw:", raw.slice(0, 300)
+          raw.slice(0, 300)
         );
     }
   }
@@ -634,19 +601,13 @@ export function createRealtimeBridge(
           openAiWs.close(1000, "bridge destroyed");
         }
       } catch {
-        // Socket may already be closing — ignore
+        // Socket may already be closing
       }
       openAiWs = null;
     }
     sessionReady = false;
     audioQueue.length = 0;
   }
-
-  // NOTE: connectOpenAi() is intentionally NOT called here.
-  // It is now triggered from inside handleExotelMessage()'s "start" case,
-  // once the script has been resolved. This is the core fix: previously
-  // this factory connected to OpenAI (and sent session.update) immediately
-  // on construction, before any callSid/streamSid/script was available.
 
   return { handleExotelMessage, destroy };
 }
