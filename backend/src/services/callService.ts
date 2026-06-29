@@ -1,187 +1,86 @@
 // src/services/callService.ts
 //
-// Public API for the call subsystem.
+// CallService prepares call context and talks to the telephony provider.
+// It contains NO prompt logic (that lives in promptBuilder.ts) and NO
+// audio/streaming logic (that lives in realtimeBridge.ts).
 //
-// Changes from the original:
-//   • generateCallingScript() is replaced by generateConversationGuide()
-//     and convertUserScript().
-//   • Both new functions return a serialised ConversationGuide JSON string
-//     that is stored in the existing Call.script field (no schema change needed).
-//   • initiateCall() accepts a pre-built guide string OR auto-generates one
-//     if neither guide nor script is provided.
-//   • Everything else (initiateCall provider logic, listCalls, analytics,
-//     webhook handler, serializeCall) is unchanged.
+// Flow: CallRequest → validate → resolve organization from Tenant →
+// ResolvedCallContext → Call.create() → Exotel.initiateOutboundCall().
+//
+// There is no script, no guide, no serialization step. The objective and
+// context fields are stored directly on the Call document and re-read by
+// the WebSocket GuideResolver in index.ts at call time.
 
-import { Call } from "../models";
+import { Call, Tenant } from "../models";
 import { env } from "../config/env";
 import { AppError } from "../utils/AppError";
 import { resolveObjectIdString } from "../utils/resolveId";
+import { describeToolViolations } from "../config/toolCompatibility";
 import * as exotelService from "./exotelService";
 import type { ICall } from "../models/Call";
-import {
-  generateGuide,
-  convertScriptToGuide,
-  serializeGuide,
-  type CallType,
-  type GenerateGuideParams,
-  type ConvertScriptParams,
-} from "./conversationGuideService";
-
-// Re-export CallType so existing callers of callService don't need to change
-// their import paths.
-export { type CallType };
+import type { CallRequest } from "../types/callRequest";
 
 // ---------------------------------------------------------------------------
-// Guide generation — USE CASE 1
+// initiateCall
 // ---------------------------------------------------------------------------
 
-/**
- * Generate a ConversationGuide from scratch using Gemini.
- * Replaces the old generateCallingScript() function.
- * Returns a serialised JSON string suitable for storing in Call.script.
- */
-export async function generateConversationGuide(params: {
-  placeName: string;
-  category: string;
-  purpose?: string;
-  organizationName?: string;
-  callType?: CallType;
-  additionalContext?: string;
-}): Promise<string> {
-  const guideParams: GenerateGuideParams = {
-    recipientName: params.placeName,
-    recipientCategory: params.category,
-    callType: params.callType ?? "pharmacy_inquiry",
-    purpose: params.purpose,
-    organizationName: params.organizationName,
-    additionalContext: params.additionalContext,
-  };
-  const guide = await generateGuide(guideParams);
-  return serializeGuide(guide);
-}
-
-// ---------------------------------------------------------------------------
-// User script conversion — USE CASE 2
-// ---------------------------------------------------------------------------
-
-/**
- * Convert a user-written script into a ConversationGuide.
- * The original script wording is discarded — only business intent is preserved.
- * Returns a serialised JSON string suitable for storing in Call.script.
- */
-export async function convertUserScript(params: {
-  userScript: string;
-  placeName: string;
-  category: string;
-  organizationName?: string;
-  callType?: CallType;
-}): Promise<string> {
-  const convertParams: ConvertScriptParams = {
-    userScript: params.userScript,
-    recipientName: params.placeName,
-    recipientCategory: params.category,
-    callType: params.callType ?? "pharmacy_inquiry",
-    organizationName: params.organizationName,
-  };
-  const guide = await convertScriptToGuide(convertParams);
-  return serializeGuide(guide);
-}
-
-// ---------------------------------------------------------------------------
-// Legacy alias — keeps existing callers working during migration
-// ---------------------------------------------------------------------------
-
-/**
- * @deprecated Use generateConversationGuide() instead.
- * Kept for backward compatibility with existing route handlers.
- * Will be removed in a future release.
- */
-export async function generateCallingScript(params: {
-  placeName: string;
-  category: string;
-  purpose?: string;
-  organizationName?: string;
-  scriptType?: CallType;
-}): Promise<string> {
-  console.warn(
-    "[callService] generateCallingScript() is deprecated. " +
-    "Use generateConversationGuide() instead."
-  );
-  return generateConversationGuide({
-    placeName: params.placeName,
-    category: params.category,
-    purpose: params.purpose,
-    organizationName: params.organizationName,
-    callType: params.scriptType,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// initiateCall — unchanged provider logic, guide-aware script storage
-// ---------------------------------------------------------------------------
-
-export async function initiateCall(params: {
-  tenantId: string;
-  userId: string;
-  placeId?: string;
-  placeName: string;
-  phoneNumber: string;
-  category?: string;
-  /** Pre-built guide JSON or legacy script string. If omitted, auto-generated. */
-  script?: string;
-  /** Whether script is a user-written script that needs conversion. */
-  convertScript?: boolean;
-  scriptType?: CallType;
-}) {
-  const normalized = params.phoneNumber.replace(/\s/g, "");
+export async function initiateCall(
+  req: CallRequest,
+  tenantId: string,
+  userId: string
+) {
+  const normalized = req.phoneNumber.replace(/\s/g, "");
   if (!/^\+?[\d]{8,15}$/.test(normalized)) {
     throw new AppError(400, "Invalid phone number", "INVALID_PHONE");
   }
 
-  // Determine the guide string to store
-  let guideJson: string | undefined = params.script;
+  if (req.objectiveType === "custom" && !req.customObjectiveText?.trim()) {
+    throw new AppError(
+      400,
+      "customObjectiveText is required when objectiveType is 'custom'",
+      "MISSING_CUSTOM_OBJECTIVE"
+    );
+  }
 
-  if (params.script && params.convertScript) {
-    // User provided a hand-written script — convert it to a guide
-    try {
-      guideJson = await convertUserScript({
-        userScript: params.script,
-        placeName: params.placeName,
-        category: params.category ?? "Healthcare",
-        callType: params.scriptType,
-      });
-    } catch (err) {
-      console.error("[callService] script conversion failed — using raw script:", err);
-      // Fall through: guideJson stays as the raw script (legacy compat)
-    }
-  } else if (!params.script) {
-    // No script provided — auto-generate a guide
-    try {
-      guideJson = await generateConversationGuide({
-        placeName: params.placeName,
-        category: params.category ?? "Healthcare",
-        callType: params.scriptType,
-      });
-    } catch (err) {
-      console.error("[callService] guide generation failed — proceeding without guide:", err);
-      guideJson = undefined;
+  // Defense-in-depth tool validation (see toolCompatibility.ts). This is
+  // deliberately NOT an objective-based allowlist — a feedback call that
+  // ends in a booked appointment, or a sales call that ends in a human
+  // transfer, is normal conversational drift, not an error. Only unknown
+  // tool values, duplicates, or a genuinely conflicting pair are rejected.
+  // The route validator should already catch these before the request
+  // reaches here; the service layer never trusts that it's the only caller.
+  if (req.enabledTools && req.enabledTools.length > 0) {
+    const violations = describeToolViolations(req.enabledTools);
+    if (violations.length > 0) {
+      throw new AppError(400, violations.join("; "), "INVALID_TOOL_COMBINATION");
     }
   }
 
+  // Organization name is always resolved server-side from the tenant
+  // record. It is never trusted from the frontend.
+  const tenantOid = resolveObjectIdString(tenantId, "tenantId");
+  const tenant = await Tenant.findById(tenantOid).select("name").lean();
+  const organizationName = tenant?.name ?? "our organization";
+
   const call = await Call.create({
-    tenantId: resolveObjectIdString(params.tenantId, "tenantId"),
-    userId: resolveObjectIdString(params.userId, "userId"),
-    placeId: params.placeId,
-    placeName: params.placeName,
+    tenantId: tenantOid,
+    userId: resolveObjectIdString(userId, "userId"),
+    placeId: req.placeId,
+    placeName: req.recipientName,
     phoneNumber: normalized,
-    category: params.category,
-    script: guideJson,           // stores the ConversationGuide JSON (or legacy text)
-    scriptType: params.scriptType,
+    category: req.recipientCategory,
+
+    organizationName,
+    objectiveType: req.objectiveType,
+    customObjectiveText: req.customObjectiveText,
+    businessContext: req.businessContext,
+    notes: req.notes,
+    enabledTools: req.enabledTools,
+
     status: "queued",
     direction: "outbound",
   });
 
-  let credentialsOk = true;
   try {
     if (
       !env.exotel.apiKey ||
@@ -189,7 +88,6 @@ export async function initiateCall(params: {
       !env.exotel.accountSid ||
       !env.exotel.exophone
     ) {
-      credentialsOk = false;
       throw new Error("Exotel credentials not configured");
     }
 
@@ -201,10 +99,15 @@ export async function initiateCall(params: {
     call.status = "initiated";
     call.exotelCallSid = exotel.callSid;
     if (!exotel.callSid) {
-      call.notes = "Exotel accepted request but returned no Call Sid";
+      // System-diagnostic detail — goes in providerError, never in notes.
+      call.providerError = "Exotel accepted request but returned no Call Sid";
     }
     await call.save();
   } catch (err) {
+    // Bug fix: this used to write into `call.notes`, silently destroying
+    // any business context the caller had set (e.g. "Ask for Dr. Mehta").
+    // Provider/telephony failures are system diagnostics and belong in
+    // their own field — `notes` is user-authored and must stay untouched.
     const message =
       err instanceof AppError
         ? err.message
@@ -212,7 +115,7 @@ export async function initiateCall(params: {
           ? err.message
           : "Call failed";
     call.status = "failed";
-    call.notes = credentialsOk ? message : `Exotel unavailable: ${message}`;
+    call.providerError = message;
     await call.save();
     console.error("[callService] initiateCall provider error", {
       callId: call._id.toString(),
@@ -224,7 +127,7 @@ export async function initiateCall(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Read operations — unchanged
+// Read operations
 // ---------------------------------------------------------------------------
 
 type PopulatedUser = { _id: unknown; firstName?: string; lastName?: string };
@@ -251,12 +154,15 @@ export function serializeCall(
     category: call.category,
     status: call.status,
     direction: call.direction,
-    script: call.script,
-    scriptType: call.scriptType,
+    objectiveType: call.objectiveType,
+    customObjectiveText: call.customObjectiveText,
+    businessContext: call.businessContext,
+    notes: call.notes,
+    enabledTools: call.enabledTools,
     exotelCallSid: call.exotelCallSid,
     recordingUrl: call.recordingUrl,
     durationSeconds: call.durationSeconds,
-    notes: call.notes,
+    providerError: call.providerError,
     initiatedBy,
     createdAt: call.createdAt?.toISOString() ?? now,
     updatedAt: call.updatedAt?.toISOString() ?? now,
@@ -317,7 +223,7 @@ export async function getCallAnalytics(tenantId: string, userId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook handler — unchanged
+// Webhook handler
 // ---------------------------------------------------------------------------
 
 function mapExotelTerminalStatus(
