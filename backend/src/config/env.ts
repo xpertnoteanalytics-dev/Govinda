@@ -1,8 +1,6 @@
 // src/config/env.ts
 import dotenv from "dotenv";
-
 dotenv.config();
-
 function requireEnv(key: string): string {
   const value = process.env[key];
   if (!value) {
@@ -10,7 +8,6 @@ function requireEnv(key: string): string {
   }
   return value;
 }
-
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: parseInt(process.env.PORT ?? "4000", 10),
@@ -52,6 +49,17 @@ export const env = {
   },
   elevenLabs: {
     apiKey: process.env.ELEVENLABS_API_KEY ?? "",
+    // No default — must be filled in after picking an Indian male voice
+    // from the ElevenLabs Voice Library (e.g. "Aakash Aryan" or similar)
+    // and copying its voice_id from My Voices. ElevenLabsClient throws a
+    // clear error at connect time if this is empty, rather than silently
+    // failing or guessing a voice ID that may not exist on this account.
+    voiceId: process.env.ELEVENLABS_VOICE_ID ?? "",
+    // Flash v2.5 — the model ElevenLabs themselves recommend for live
+    // conversational voice agents (~75ms model inference time), not v3
+    // (expressive but not real-time) or Multilingual v2 (higher quality,
+    // higher latency, meant for narration).
+    modelId: process.env.ELEVENLABS_MODEL_ID ?? "eleven_flash_v2_5",
   },
   anam: {
     apiKey: process.env.ANAM_API_KEY ?? "",
