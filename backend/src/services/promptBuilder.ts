@@ -5,25 +5,55 @@
 //
 // Design principles:
 //   • Govinda is always the AI identity. Never overridden.
-//   • The opening line is always: "Hi, this is Govinda calling on behalf of {{org}}."
-//     The model adapts the exact phrasing naturally — it is never read verbatim.
 //   • The prompt gives the model reasoning knowledge, not a script.
 //   • Predefined objectives use curated profiles (objectiveProfiles.ts).
 //   • Custom objectives use the user's 1–2 sentence description directly.
-//   • Target: 600–900 tokens. Every sentence earns its place.
+//   • Enabled tools are surfaced automatically — never hardcoded per objective.
+//   • Target: 500–700 tokens. Every line earns its place; nothing already
+//     implied by the objective or by general model competence is restated.
 //
 // DO NOT add business logic, database access, or guide generation here.
 // This file only transforms a ResolvedCallContext into a string.
 
 import type { ResolvedCallContext } from "../types/callRequest";
 import { getObjectiveProfile, objectiveLabel } from "../config/objectiveProfiles";
+import { getToolInstructions } from "../config/toolInstructions";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Shared fragments
 // ---------------------------------------------------------------------------
+//
+// Identical across both builders below. Kept as single constants instead of
+// being written twice — duplication was the single largest source of wasted
+// tokens in the previous version (the same six speaking rules were spelled
+// out in full in both buildProfiledPrompt and buildCustomPrompt).
 
-function numbered(items: string[]): string {
-  return items.map((item, i) => `${i + 1}. ${item}`).join("\n");
+function identityBlock(ctx: ResolvedCallContext): string {
+  return `You are Govinda, calling on behalf of ${ctx.organizationName}. You are warm, professional, and completely human in manner — never say you are an AI, never read from a script.`;
+}
+
+const HOW_TO_SPEAK = `HOW TO SPEAK
+• One thought, one question at a time — then stop and wait for the full reply.
+• Stop instantly if the recipient starts talking; listen, then respond to what they said before continuing.
+• Don't re-ask anything already answered or implied.
+• Mirror the recipient's language (English, Hindi, Hinglish) — never switch to anything else.
+• Keep turns to 1–3 sentences unless more detail is clearly needed.
+• Never invent facts, pricing, or policy. If unsure: "I'll have someone follow up on that."`;
+
+function contextBlock(ctx: ResolvedCallContext): string {
+  const lines = [
+    ctx.businessContext ? `Background: ${ctx.businessContext}` : "",
+    ctx.notes ? `Notes: ${ctx.notes}` : "",
+    ctx.recipientCategory ? `Recipient type: ${ctx.recipientCategory}` : "",
+  ].filter(Boolean);
+  return lines.length ? `CONTEXT (know this; never recite it)\n${lines.join("\n")}\n\n` : "";
+}
+
+function toolsBlock(ctx: ResolvedCallContext): string {
+  const tools = getToolInstructions(ctx.enabledTools);
+  if (tools.length === 0) return "";
+  const lines = tools.map((t) => `• ${t.label}: ${t.instruction}`).join("\n");
+  return `TOOLS AVAILABLE\n${lines}\n\n`;
 }
 
 function bulleted(items: string[]): string {
@@ -39,77 +69,42 @@ function buildProfiledPrompt(ctx: ResolvedCallContext): string {
   const label = objectiveLabel(ctx.objectiveType);
 
   const collectBlock = profile.informationToCollect
-    .sort((a, b) => (b.required ? 1 : 0) - (a.required ? 1 : 0))
-    .map((c) => {
-      const tag = c.required ? "[required]" : "[optional]";
-      return `${tag} ${c.field} — ${c.hint}`;
-    })
+    .map((c) => `${c.required ? "[required]" : "[optional]"} ${c.field} — ${c.hint}`)
     .join("\n");
 
   const qaBlock = profile.likelyQuestions
     .map((q) => `Q: ${q.question}\nA: ${q.answerGuidance}`)
-    .join("\n\n");
+    .join("\n");
 
   const objectionBlock = profile.likelyObjections
     .map((o) => `"${o.objection}" → ${o.approach}`)
     .join("\n");
 
-  const topicsBlock = numbered(profile.topicsToAddress);
-
-  const contextBlock = [
-    ctx.businessContext ? `Background: ${ctx.businessContext}` : "",
-    ctx.notes ? `Notes: ${ctx.notes}` : "",
-    ctx.recipientCategory ? `Recipient type: ${ctx.recipientCategory}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
   return `
-You are Govinda, calling on behalf of ${ctx.organizationName}.
-You are a senior, warm, professional healthcare executive — completely human in your manner.
+${identityBlock(ctx)}
 
-Your opening: introduce yourself naturally as Govinda from ${ctx.organizationName}.
-Never say you are an AI. Never read from a script. Reason and respond.
-
-CALL TYPE: ${label}
-RECIPIENT: ${ctx.recipientName}
+CALL TYPE: ${label} | RECIPIENT: ${ctx.recipientName}
 
 OBJECTIVE
 ${profile.successCriteria}
 
-CONVERSATION STRATEGY
+STRATEGY
 ${profile.conversationStrategy}
 
-${contextBlock ? `CONTEXT (know this; never recite it)\n${contextBlock}\n` : ""}
-TOPICS TO COVER (weave in naturally; skip what the recipient already answered)
-${topicsBlock}
-
-COLLECT BEFORE CLOSING
+${contextBlock(ctx)}${toolsBlock(ctx)}COLLECT BEFORE CLOSING
 ${collectBlock}
 
-IF THE RECIPIENT ASKS
+LIKELY QUESTIONS
 ${qaBlock}
 
-IF THE RECIPIENT OBJECTS
+LIKELY OBJECTIONS
 ${objectionBlock}
 
 CLOSING
 ${profile.closingGuidance}
 
-HOW TO SPEAK
-• One thought at a time. One question at a time. Then stop and wait for the full reply.
-• Never ask about something the recipient already answered or implied.
-• If the recipient starts speaking while you are: stop immediately. Listen. Then respond to what they said.
-• Answer their question first, then return to the objective with a natural bridge.
-• When the objective is achieved and all required information is collected: close the call. Do not keep talking.
-• Mirror the recipient's language — English, Hindi, or Hinglish. Never switch to any other language.
-• Keep every turn to 1–3 sentences unless a longer explanation is clearly needed.
-• Never invent medical facts, pricing, or policies. If unsure: "I'll have someone from our team follow up on that."
-${
-  profile.callRules.length > 0
-    ? `\nCALL-SPECIFIC RULES\n${bulleted(profile.callRules)}`
-    : ""
-}
+${HOW_TO_SPEAK}
+${profile.callRules.length ? `\nCALL-SPECIFIC RULES\n${bulleted(profile.callRules)}` : ""}
 `.trim();
 }
 
@@ -118,41 +113,22 @@ ${
 // ---------------------------------------------------------------------------
 
 function buildCustomPrompt(ctx: ResolvedCallContext): string {
-  const contextBlock = [
-    ctx.businessContext ? `Background: ${ctx.businessContext}` : "",
-    ctx.notes ? `Notes: ${ctx.notes}` : "",
-    ctx.recipientCategory ? `Recipient type: ${ctx.recipientCategory}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const objective =
+    ctx.customObjectiveText ??
+    "Conduct a professional outreach call and achieve the best possible outcome for the caller.";
 
   return `
-You are Govinda, calling on behalf of ${ctx.organizationName}.
-You are a senior, warm, professional healthcare executive — completely human in your manner.
-
-Your opening: introduce yourself naturally as Govinda from ${ctx.organizationName}.
-Never say you are an AI. Never read from a script. Reason and respond.
+${identityBlock(ctx)}
 
 RECIPIENT: ${ctx.recipientName}
 
 OBJECTIVE
-${ctx.customObjectiveText ?? "Conduct a professional outreach call and achieve the best possible outcome for the caller."}
+${objective}
 
-${contextBlock ? `CONTEXT (know this; never recite it)\n${contextBlock}\n` : ""}
-HOW TO APPROACH THIS CALL
-• Reason from the objective above. Decide the best path through the conversation as it unfolds.
-• Open by introducing yourself, then state your reason for calling in one clear sentence.
-• Ask one question at a time. Wait for the full reply.
-• Track what has and hasn't been covered. Don't re-ask anything already answered.
-• When the objective is achieved: close the call gracefully. Summarise what was agreed.
-• If the conversation goes off-track, use a short bridge to return to the objective.
+${contextBlock(ctx)}${toolsBlock(ctx)}APPROACH
+Reason from the objective above — decide the path through the conversation as it unfolds. Open by introducing yourself, then state your reason for calling in one clear sentence. Track what's covered. Close gracefully once the objective is met, summarising what was agreed. If the conversation drifts, use a short bridge back to the objective.
 
-HOW TO SPEAK
-• One thought at a time. One question at a time. Stop. Listen. Respond.
-• If the recipient starts speaking while you are: stop immediately. Listen first.
-• Mirror the recipient's language — English, Hindi, or Hinglish. Never switch to any other language.
-• Keep every turn to 1–3 sentences.
-• Never invent facts, pricing, policies, or medical information. If unsure: "I'll have someone follow up."
+${HOW_TO_SPEAK}
 `.trim();
 }
 
@@ -184,13 +160,9 @@ export function buildRealtimePrompt(ctx: ResolvedCallContext): string {
 export function buildFallbackPrompt(organizationName?: string): string {
   const org = organizationName ?? "our organization";
   return `
-You are Govinda, calling on behalf of ${org}.
-You are a professional healthcare executive — warm, direct, and human.
-Introduce yourself and state your reason for calling clearly in the first sentence.
-Ask one question at a time. Stop and listen after each question.
-Stop speaking immediately if the recipient starts talking.
-Mirror the recipient's language — English, Hindi, or Hinglish.
-Keep every response to 1–3 sentences.
-Never invent medical facts, pricing, or policies.
+You are Govinda, calling on behalf of ${org}. Warm, direct, human.
+State your reason for calling in the first sentence. Ask one question at a time, stop and listen after each.
+Stop speaking immediately if the recipient starts talking. Mirror their language (English, Hindi, Hinglish).
+Keep responses to 1–3 sentences. Never invent facts, pricing, or policy.
 `.trim();
 }
