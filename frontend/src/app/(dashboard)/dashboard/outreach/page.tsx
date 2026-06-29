@@ -45,12 +45,13 @@ export default function OutreachPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const filterCat = <T extends { category?: string }>(arr: T[]) =>
-    category === "All" ? arr : arr.filter(r => r.category === category);
+  // Generic category filter — callers supply which field holds the category value.
+  const filterCat = <T extends Record<string, unknown>>(arr: T[], field: keyof T) =>
+    category === "All" ? arr : arr.filter(r => r[field] === category);
 
-  const filteredEmails   = filterCat(emails);
-  const filteredMessages = filterCat(messages);
-  const filteredCalls    = filterCat(calls);
+  const filteredEmails   = filterCat(emails,   "category");
+  const filteredMessages = filterCat(messages, "category");
+  const filteredCalls    = filterCat(calls,    "recipientCategory");
   const totalActivities  = emails.length + messages.length + calls.length;
 
   const tabs = [
@@ -119,8 +120,8 @@ export default function OutreachPage() {
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "Total activity",    value: totalActivities,               hint: "Calls + WhatsApp + Emails" },
-          { label: "Emails",            value: emails.length,                 hint: "Outbound emails sent" },
+          { label: "Total activity",    value: totalActivities,                hint: "Calls + WhatsApp + Emails" },
+          { label: "Emails",            value: emails.length,                  hint: "Outbound emails sent" },
           { label: "WhatsApp + calls",  value: messages.length + calls.length, hint: "Direct contact" },
         ].map((s) => (
           <div key={s.label} className="bg-muted/50 rounded-lg p-4 border border-border/50">
@@ -190,8 +191,8 @@ export default function OutreachPage() {
 
           {(tab === "all" || tab === "call") && filteredCalls.map((row, i) => (
             <ActivityCard key={row.id} type="call" index={i}
-              name={row.placeName}
-              category={(row as any).category}
+              name={row.recipientName}
+              category={row.recipientCategory}
               sub={row.phoneNumber}
               meta={new Date(row.createdAt).toLocaleString()}
               status={row.status} />
