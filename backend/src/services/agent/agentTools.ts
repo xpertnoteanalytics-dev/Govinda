@@ -9,7 +9,7 @@ import { Appointment } from "../../models/Appointment";
 import type { OutreachType } from "../../types/outreach";
 import type { PlaceCategory } from "../../types/places";
 import type { AgentContext } from "./agentContext";
-import type { CallRequest } from "../../types/callRequest";
+import type { CallRequest, CallTool } from "../../types/callRequest";
 
 export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] =
   [
@@ -304,12 +304,12 @@ export async function executeAgentTool(
         phoneNumber: String(args.phoneNumber),
         placeId: args.placeId as string | undefined,
         recipientCategory: args.recipientCategory as string | undefined,
-        objectiveType: args.objectiveType as CallRequest["objectiveType"] | undefined,
+        objectiveType: (args.objectiveType as CallRequest["objectiveType"]) ?? "custom",
         customObjectiveText: args.customObjectiveText as string | undefined,
         businessContext: args.businessContext as string | undefined,
         notes: args.notes as string | undefined,
         enabledTools: Array.isArray(args.enabledTools)
-          ? (args.enabledTools as string[])
+          ? (args.enabledTools as CallTool[])
           : undefined,
       };
       const call = await callService.initiateCall(req, ctx.tenantId, ctx.userId);
