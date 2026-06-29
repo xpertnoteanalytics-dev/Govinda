@@ -9,6 +9,7 @@ import { Appointment } from "../../models/Appointment";
 import type { OutreachType } from "../../types/outreach";
 import type { PlaceCategory } from "../../types/places";
 import type { AgentContext } from "./agentContext";
+import type { CallRequest } from "../../types/callRequest";
 
 export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] =
   [
@@ -37,53 +38,60 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
     {
       type: "function",
       function: {
-        name: "generate_calling_script",
-        description:
-          "Generate a professional healthcare outreach calling script (pharmacy, appointment, or coordination).",
-        parameters: {
-          type: "object",
-          properties: {
-            placeName: { type: "string" },
-            category: { type: "string" },
-            purpose: { type: "string" },
-            scriptType: {
-              type: "string",
-              enum: [
-                "pharmacy_inquiry",
-                "appointment_scheduling",
-                "healthcare_coordination",
-              ],
-              description: "Kind of script to generate",
-            },
-          },
-          required: ["placeName", "category"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
         name: "initiate_phone_call",
         description:
           "Initiate an AI voicebot outbound call to a healthcare facility. The AI will speak directly to the facility.",
         parameters: {
           type: "object",
           properties: {
-            placeName: { type: "string" },
-            phoneNumber: { type: "string" },
-            category: { type: "string" },
-            placeId: { type: "string" },
-            script: { type: "string" },
-            scriptType: {
+            recipientName: {
+              type: "string",
+              description: "Name of the facility or person being called",
+            },
+            phoneNumber: {
+              type: "string",
+              description: "Phone number to call, e.g. +919876543210",
+            },
+            placeId: {
+              type: "string",
+              description: "Optional place ID from a prior search",
+            },
+            recipientCategory: {
+              type: "string",
+              description: "Category of the recipient, e.g. pharmacy, hospital",
+            },
+            objectiveType: {
               type: "string",
               enum: [
                 "pharmacy_inquiry",
                 "appointment_scheduling",
                 "healthcare_coordination",
+                "custom",
               ],
+              description: "The primary objective of the call",
+            },
+            customObjectiveText: {
+              type: "string",
+              description:
+                "Required when objectiveType is 'custom'. Describes what the AI should achieve.",
+            },
+            businessContext: {
+              type: "string",
+              description:
+                "Background information to help the AI conduct the call (e.g. patient details, medication needed)",
+            },
+            notes: {
+              type: "string",
+              description: "Any additional notes for this call",
+            },
+            enabledTools: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional list of tool names the voicebot may use during the call",
             },
           },
-          required: ["placeName", "phoneNumber"],
+          required: ["recipientName", "phoneNumber"],
         },
       },
     },
@@ -98,8 +106,14 @@ export const OPENAI_TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool
           properties: {
             patientName: { type: "string", description: "Full name of the patient" },
             service: { type: "string", description: "Type of service or consultation" },
-            appointmentDate: { type: "string", description: "Date of appointment e.g. 2024-12-25 or tomorrow" },
-            appointmentTime: { type: "string", description: "Time of appointment e.g. 10:00 AM" },
+            appointmentDate: {
+              type: "string",
+              description: "Date of appointment e.g. 2024-12-25 or tomorrow",
+            },
+            appointmentTime: {
+              type: "string",
+              description: "Time of appointment e.g. 10:00 AM",
+            },
             phone: { type: "string", description: "Patient phone number" },
             notes: { type: "string", description: "Additional notes" },
           },
@@ -284,35 +298,21 @@ export async function executeAgentTool(
         })),
       });
     }
-    case "generate_calling_script": {
-      const script = await callService.generateCallingScript({
-        placeName: String(args.placeName),
-        category: String(args.category),
-        purpose: args.purpose as string | undefined,
-        organizationName: ctx.organizationName,
-        scriptType: args.scriptType as
-          | "pharmacy_inquiry"
-          | "appointment_scheduling"
-          | "healthcare_coordination"
-          | undefined,
-      });
-      return JSON.stringify({ script });
-    }
     case "initiate_phone_call": {
-      const call = await callService.initiateCall({
-        tenantId: ctx.tenantId,
-        userId: ctx.userId,
-        placeId: args.placeId as string | undefined,
-        placeName: String(args.placeName),
+      const req: CallRequest = {
+        recipientName: String(args.recipientName),
         phoneNumber: String(args.phoneNumber),
-        category: args.category as string | undefined,
-        script: args.script as string | undefined,
-        scriptType: args.scriptType as
-          | "pharmacy_inquiry"
-          | "appointment_scheduling"
-          | "healthcare_coordination"
-          | undefined,
-      });
+        placeId: args.placeId as string | undefined,
+        recipientCategory: args.recipientCategory as string | undefined,
+        objectiveType: args.objectiveType as CallRequest["objectiveType"] | undefined,
+        customObjectiveText: args.customObjectiveText as string | undefined,
+        businessContext: args.businessContext as string | undefined,
+        notes: args.notes as string | undefined,
+        enabledTools: Array.isArray(args.enabledTools)
+          ? (args.enabledTools as string[])
+          : undefined,
+      };
+      const call = await callService.initiateCall(req, ctx.tenantId, ctx.userId);
       return JSON.stringify(call);
     }
     case "book_appointment": {
