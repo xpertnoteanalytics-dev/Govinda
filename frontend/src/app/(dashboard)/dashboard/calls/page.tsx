@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Phone, Loader2 } from "lucide-react";
+import { Phone, Loader2, Plus } from "lucide-react";
 import { listCalls, getCallAnalytics, type CallRecord } from "@/lib/calls-api";
 import { HEALTHCARE_WORKFLOW_STEPS } from "@/lib/workflow-steps";
 import { WorkflowRibbon } from "@/components/ui/WorkflowRibbon";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { CallScriptModal } from "@/components/calls/CallScriptModal";
 
 export default function CallsPage() {
   const [calls, setCalls] = useState<CallRecord[]>([]);
@@ -17,6 +18,7 @@ export default function CallsPage() {
     failedCalls: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([listCalls(), getCallAnalytics()])
@@ -35,11 +37,21 @@ export default function CallsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-4 sm:p-6">
-      <div>
-        <h2 className="ops-page-title">Calling workflow</h2>
-        <p className="ops-page-subtitle">
-          Connect with facilities and patients using AI-assisted scripts
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="ops-page-title">Calling workflow</h2>
+          <p className="ops-page-subtitle">
+            Connect with facilities and patients using AI-assisted calls
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className="ops-btn-primary flex shrink-0 items-center gap-2"
+        >
+          <Plus className="h-4 w-4" />
+          Create AI Call
+        </button>
       </div>
 
       <WorkflowRibbon steps={HEALTHCARE_WORKFLOW_STEPS} activeIndex={1} />
@@ -51,10 +63,10 @@ export default function CallsPage() {
       {analytics && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            { label: "Total calls", value: analytics.totalCalls },
-            { label: "Completed", value: analytics.completedCalls },
-            { label: "Failed", value: analytics.failedCalls },
-            { label: "Success rate", value: `${analytics.successRate}%` },
+            { label: "Total calls",   value: analytics.totalCalls    },
+            { label: "Completed",     value: analytics.completedCalls },
+            { label: "Failed",        value: analytics.failedCalls    },
+            { label: "Success rate",  value: `${analytics.successRate}%` },
           ].map((s) => (
             <div key={s.label} className="ops-panel p-4">
               <p className="text-xs text-slate-400">{s.label}</p>
@@ -72,7 +84,9 @@ export default function CallsPage() {
         <div className="ops-panel flex flex-col items-center py-16 text-center">
           <Phone className="h-12 w-12 text-slate-500" />
           <p className="mt-4 font-medium text-slate-200">No calls yet</p>
-          <p className="mt-1 text-sm text-slate-500">Start from Find Care to place your first call</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Create an AI Call above to get started
+          </p>
         </div>
       ) : (
         <ul className="space-y-3">
@@ -86,11 +100,11 @@ export default function CallsPage() {
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="font-semibold text-white">{call.placeName}</p>
+                  <p className="font-semibold text-white">{call.recipientName}</p>
                   <p className="text-sm text-slate-400">{call.phoneNumber}</p>
-                  {call.scriptType && (
+                  {call.objectiveType && (
                     <p className="mt-1 text-xs text-brand-300/90 capitalize">
-                      {call.scriptType.replace(/_/g, " ")}
+                      {call.objectiveType.replace(/_/g, " ")}
                     </p>
                   )}
                   <p className="mt-1 text-xs text-slate-500">
@@ -105,6 +119,8 @@ export default function CallsPage() {
           ))}
         </ul>
       )}
+
+      <CallScriptModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </div>
   );
 }
