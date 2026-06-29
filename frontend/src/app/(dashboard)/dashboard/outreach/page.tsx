@@ -46,7 +46,7 @@ export default function OutreachPage() {
   }, []);
 
   // Generic category filter — callers supply which field holds the category value.
-  const filterCat = <T extends Record<string, unknown>>(arr: T[], field: keyof T) =>
+  const filterCat = <K extends string, T extends { [P in K]?: string }>(arr: T[], field: K) =>
     category === "All" ? arr : arr.filter(r => r[field] === category);
 
   const filteredEmails   = filterCat(emails,   "category");
