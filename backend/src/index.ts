@@ -1,13 +1,21 @@
 // src/index.ts
 //
 // The GuideResolver passed to createRealtimeBridge() is the ONLY place where
-// the three layers are wired together:
-//   1. MongoDB lookup  (existing Call model — unchanged)
-//   2. Guide deserialisation  (conversationGuideService.deserializeGuide)
-//   3. Prompt rendering  (promptBuilder.buildRealtimePrompt)
+// the two layers are wired together:
+//   1. MongoDB lookup  (Call model)
+//   2. Prompt rendering  (promptBuilder.buildRealtimePrompt)
 //
 // RealtimeBridge receives only the final rendered string and has no
-// knowledge of any of these layers.
+// knowledge of either layer.
+//
+// ── Integration note (extraction engine) ──────────────────────────────────
+// On WS close, the call has fully ended. The accumulated transcript
+// (bridge.getTranscript()) plus the same Call document already looked up
+// for the GuideResolver are handed to extractionTrigger.runForCall(), which
+// fires runExtraction() → dispatchExtraction() without blocking the close
+// handler. PromptBuilder, RealtimeBridge's audio/session logic, and
+// CallRequest are all untouched — this only adds one fire-and-forget call
+// at the point the call is already torn down.
 
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
@@ -18,8 +26,9 @@ import type { IncomingMessage } from "http";
 import type { Socket } from "net";
 import { createRealtimeBridge } from "./services/realtimeBridge";
 import { Call } from "./models";
-import { deserializeGuide } from "./services/conversationGuideService";
 import { buildRealtimePrompt, buildFallbackPrompt } from "./services/promptBuilder";
+import { runForCall } from "./services/extractionTrigger";
+import type { ResolvedCallContext } from "./types/callRequest";
 
 async function bootstrap() {
   await connectDatabase();
@@ -55,22 +64,27 @@ async function bootstrap() {
   wss.on("connection", (ws, req) => {
     console.log("[ws] Exotel voicebot connected from", req.socket.remoteAddress);
 
+    // Tracks the callSid this socket resolved to, so the close handler
+    // below can look the Call document up again for extraction without
+    // needing the GuideResolver to expose anything new.
+    let resolvedCallSid: string | undefined;
+
     /**
      * GuideResolver — called by RealtimeBridge once it has the callSid.
      *
      * Steps:
      *   1. Look up the Call document in MongoDB by exotelCallSid.
-     *   2. Attempt to deserialise the stored `script` field as a ConversationGuide.
-     *      (New calls store JSON. Legacy calls may store plain-text scripts.)
-     *   3. If a valid guide is found: render it with promptBuilder.
-     *   4. If the stored value is plain-text (legacy): treat it as fallback context
-     *      and render a minimal prompt wrapping it.
-     *   5. If nothing is found: return undefined → bridge uses its own fallback.
+     *   2. Build a ResolvedCallContext directly from the stored fields.
+     *   3. Render it with promptBuilder.buildRealtimePrompt().
+     *   4. If nothing is found: return undefined → bridge uses its own fallback.
      */
     const bridge = createRealtimeBridge(ws, async (callSid: string) => {
+      resolvedCallSid = callSid;
       try {
         const doc = await Call.findOne({ exotelCallSid: callSid })
-          .select("script placeName category scriptType")
+          .select(
+            "placeName category organizationName objectiveType customObjectiveText businessContext notes enabledTools phoneNumber"
+          )
           .lean();
 
         if (!doc) {
@@ -78,35 +92,27 @@ async function bootstrap() {
           return buildFallbackPrompt();
         }
 
-        if (!doc.script) {
-          console.warn("[ws] Call document has no script for callSid:", callSid);
-          return buildFallbackPrompt();
-        }
+        const ctx: ResolvedCallContext = {
+          aiIdentity: "Govinda",
+          organizationName: doc.organizationName,
+          recipientName: doc.placeName,
+          recipientCategory: doc.category,
+          objectiveType: doc.objectiveType,
+          customObjectiveText: doc.customObjectiveText,
+          businessContext: doc.businessContext,
+          notes: doc.notes,
+          enabledTools: doc.enabledTools,
+        };
 
-        // Attempt to parse as ConversationGuide JSON (new format)
-        const guide = deserializeGuide(doc.script);
-
-        if (guide) {
-          // New format: render the guide into a full prompt
-          console.log(
-            "[ws] ConversationGuide found for callSid:", callSid,
-            "| objective:", guide.callObjective.slice(0, 80)
-          );
-          return buildRealtimePrompt(guide);
-        }
-
-        // Legacy format: the stored value is a plain-text script.
-        // Wrap it in a minimal prompt that instructs the model to reason
-        // over it rather than read it, preserving backward compatibility.
         console.log(
-          "[ws] legacy plain-text script found for callSid:", callSid,
-          "| length:", doc.script.length,
-          "— wrapping in legacy prompt"
+          "[ws] call context resolved for callSid:", callSid,
+          "| objective:", ctx.objectiveType
         );
-        return buildLegacyScriptPrompt(doc.script, doc.placeName, doc.category);
+
+        return buildRealtimePrompt(ctx);
       } catch (err) {
         console.error(
-          "[ws] guide resolution error for callSid:", callSid,
+          "[ws] context resolution error for callSid:", callSid,
           "|", err instanceof Error ? err.message : err
         );
         return buildFallbackPrompt();
@@ -130,6 +136,14 @@ async function bootstrap() {
 
     ws.on("close", (code, reason) => {
       console.log("[ws] Exotel disconnected", code, reason.toString());
+
+      // Trigger extraction BEFORE destroy() — getTranscript() reads from
+      // the bridge's still-live closure state. destroy() only tears down
+      // the OpenAI socket/session flags, so ordering here doesn't risk
+      // losing transcript data, but doing it first is the more obviously
+      // correct order to read from a thing before discarding it.
+      triggerCallExtraction(resolvedCallSid, bridge.getTranscript());
+
       bridge.destroy();
     });
 
@@ -151,40 +165,46 @@ async function bootstrap() {
 }
 
 /**
- * Legacy compatibility: wrap a plain-text script in a prompt that tells
- * the model to reason over it, not recite it. This handles all existing
- * Call documents created before the ConversationGuide architecture.
+ * Fire-and-forget extraction trigger for a finished phone call.
  *
- * Once all existing calls are migrated (or expired), this can be removed.
+ * Looks the Call document up by callSid one more time (cheap — single
+ * indexed find) to get tenantId, objectiveType, enabledTools, and the
+ * recipient's phone number, none of which the WS close handler otherwise
+ * has on hand. Does not await — never blocks WS teardown.
  */
-function buildLegacyScriptPrompt(
-  script: string,
-  placeName: string,
-  category?: string
-): string {
-  return `
-You are a professional healthcare executive from Govinda AI making a phone call.
-You are calling: ${placeName}${category ? ` (${category})` : ""}.
-You sound completely human. You never sound scripted. You think and reason.
+function triggerCallExtraction(callSid: string | undefined, transcript: string): void {
+  if (!callSid) {
+    console.warn("[ws] call ended with no resolved callSid — skipping extraction");
+    return;
+  }
+  if (!transcript.trim()) {
+    console.log("[ws] call ended with empty transcript — skipping extraction for callSid:", callSid);
+    return;
+  }
 
-Below is background knowledge about this call.
-This is NOT a script. Do NOT read it word-for-word.
-Read it to understand the purpose and talking points.
-Then speak naturally as a human executive would.
-
-BACKGROUND KNOWLEDGE:
-${script}
-
-RULES:
-• Speak one thought at a time. Ask one question at a time. Then stop and listen.
-• Never continue speaking while the customer is talking.
-• If interrupted, stop immediately and listen.
-• Mirror the customer's language (English / Hindi / Hinglish).
-• Never switch to Chinese, Japanese, Korean, or any unrelated language.
-• Keep every response to 2–3 sentences maximum.
-• Return to the call objective after answering any side questions.
-• Never invent medical facts, pricing, or policies.
-`.trim();
+  void Call.findOne({ exotelCallSid: callSid })
+    .select("tenantId objectiveType enabledTools phoneNumber")
+    .lean()
+    .then((doc) => {
+      if (!doc) {
+        console.warn("[ws] no Call document found for extraction, callSid:", callSid);
+        return;
+      }
+      runForCall({
+        tenantId: doc.tenantId.toString(),
+        callId: doc._id.toString(),
+        transcript,
+        objectiveType: doc.objectiveType,
+        enabledTools: doc.enabledTools,
+        recipientPhone: doc.phoneNumber,
+      });
+    })
+    .catch((err) => {
+      console.error(
+        "[ws] failed to look up Call for extraction, callSid:", callSid,
+        "|", err instanceof Error ? err.message : err
+      );
+    });
 }
 
 bootstrap().catch((err) => {
