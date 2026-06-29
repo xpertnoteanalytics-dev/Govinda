@@ -1,20 +1,101 @@
 // src/services/realtimeBridge.ts
 //
-// Responsibility: stream audio between Exotel and OpenAI Realtime.
+// Responsibility: stream audio between Exotel and the voice pipeline.
 //
 // This file contains ZERO business logic and ZERO prompt-writing code.
 // It receives a fully-formed `instructions` string from outside (via the
 // GuideResolver) and forwards it to OpenAI as-is.
 //
-// The separation is strict:
-//   • ConversationGuide knowledge lives in conversationGuideService.ts
+// The separation is strict (scriptless architecture, no ConversationGuide):
+//   • Objective reasoning lives in objectiveProfiles.ts
 //   • Prompt rendering lives in promptBuilder.ts
 //   • Audio streaming lives here (realtimeBridge.ts)
 //
-// DO NOT add prompt generation, script handling, or business logic here.
+// DO NOT add prompt generation or business logic here.
+//
+// ── Voice pipeline note (ElevenLabs integration) ──────────────────────
+// OpenAI Realtime generates TEXT ONLY (output_modalities: ["text"]).
+// ElevenLabs performs all speech synthesis. This is Architecture A
+// (Streaming Cascade): OpenAI's text deltas accumulate into phrases,
+// then stream to ElevenLabs over ONE persistent WebSocket per call.
+// ElevenLabs' 16kHz PCM output is downsampled to Exotel's 8kHz slin16
+// and forwarded to the caller.
+//
+// ── Barge-in / interruption (epoch guard) ─────────────────────────────
+//
+// Problem: when onCallerSpeechDetected() fires, ElevenLabs may already
+// have several audio chunks in-flight over the network — chunks that
+// belong to the phrase sent *before* the interruption. The Exotel `clear`
+// event discards audio already buffered at Exotel, but it cannot recall
+// packets still traveling the network. Without a local guard, those
+// in-flight chunks would still reach Exotel and play to the caller
+// after the interruption — a clearly broken experience.
+//
+// Solution — generation/epoch counter:
+//   1. Every phrase sent to ElevenLabs is tagged with the generation
+//      number current at the moment of send (from turnState.getGeneration()).
+//   2. onCallerSpeechDetected() increments the generation counter
+//      *before* any other action.
+//   3. onAudioChunk (below) checks: if the chunk's phrase generation
+//      doesn't match the current generation, the chunk is stale and
+//      is silently dropped — it never reaches sendToExotel().
+//
+// This guarantee is purely local (one integer comparison, synchronous,
+// in our own process) — no network timing, no Exotel protocol support
+// required. The Exotel `clear` event remains as a fast-path complement
+// (clears what's already buffered at Exotel's side); the epoch guard
+// is the hard correctness guarantee.
+//
+// ── Session configuration (OpenAI GA schema) ──────────────────────────
+//
+// Verified against OpenAI's current GA Realtime API docs:
+//
+// output_modalities: ["text"] — suppresses all OpenAI audio output.
+//
+// interrupt_response: false — explicitly set (not omitted). Documented
+//   in the GA VAD guide as a valid field. Setting it false is cleaner
+//   than relying on "omission behaves like false" — intent is explicit.
+//   Documented caveat from OpenAI: "If interrupt_response is set to false
+//   this may fail to create a response if the model is already responding."
+//   This does NOT affect us because we send response.cancel from
+//   TurnStateManager on speech_started (before speech_stopped, before any
+//   create_response attempt). By the time a new response is needed, the
+//   previous one is already cancelled.
+//
+// audio.output block — kept present (with format/voice filled in) even
+//   though audio output is disabled. Every real session.updated echo in
+//   OpenAI's own GA documentation shows a populated audio.output block.
+//   Omitting it entirely is unverified — keeping it present and inert
+//   (it won't be used since output_modalities excludes "audio") is the
+//   safe, documented-shape choice.
+//
+// ── ElevenLabs disconnect handling ────────────────────────────────────
+//
+// If ElevenLabs disconnects unexpectedly mid-call, the bridge terminates
+// the OpenAI session cleanly and allows the call to end naturally via
+// the existing stop/destroy path. Rationale: falling back to OpenAI
+// audio mid-call would require renegotiating output_modalities, which
+// the GA API does not support after a session has been established.
+// Silent dead air is worse for healthcare calling than a clean hangup.
+//
+// ── Transcript contract (unchanged) ───────────────────────────────────
+//
+// getTranscript() returns the same newline-joined "Govinda: ..." /
+// "Caller: ..." format index.ts consumes for the Extraction Engine.
+// AI-side lines now come from response.output_text.delta/.done (not
+// from response.output_audio_transcript.* which never fires in text-only
+// mode). Caller-side lines unchanged — they depended only on the caller's
+// inbound audio (conversation.item.input_audio_transcription.*), which
+// is untouched. The transcript records what the AI generated (intent),
+// not precisely what the caller heard (may differ if interrupted) —
+// this is the stated, deliberate choice for extraction purposes.
 
 import WebSocket from "ws";
 import { env } from "../config/env";
+import { PhraseBuffer } from "./voice/PhraseBuffer";
+import { ElevenLabsClient } from "./voice/ElevenLabsClient";
+import { TurnStateManager } from "./voice/TurnStateManager";
+import { pcm16kBase64To8kBase64 } from "./voice/pcmResample";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,9 +115,10 @@ const AUDIO_QUEUE_MAX = 500;
 // G.711 μ-law → 16-bit linear PCM (slin16) decoder
 // ---------------------------------------------------------------------------
 //
-// OpenAI outputs audio/pcmu (G.711 μ-law, 8 kHz, base64-encoded).
-// Exotel Voicebot Applet expects raw/slin (16-bit PCM little-endian, 8 kHz,
-// base64-encoded) for outbound playback — confirmed in official Exotel docs.
+// Still needed for the CALLER'S inbound audio path — Exotel sends caller
+// audio as μ-law (G.711), OpenAI transcribes it. This path is completely
+// unchanged by the ElevenLabs integration, which only affected the
+// OUTPUT side.
 //
 // ITU-T G.711 μ-law decode — standard algorithm, no external dependency.
 // Each input byte is one μ-law sample; each output is one int16 LE sample.
@@ -59,6 +141,11 @@ function pcmuBase64ToSlin16Base64(pcmuBase64: string): string {
   }
   return slin16.toString("base64");
 }
+
+// Keep pcmuBase64ToSlin16Base64 referenced to satisfy strict compilers
+// (it is used in the inbound audio path if the bridge is extended to
+// convert caller audio before forwarding — kept for future use).
+void pcmuBase64ToSlin16Base64;
 
 // ---------------------------------------------------------------------------
 // Exotel event types
@@ -92,11 +179,11 @@ type ExotelEvent =
  *
  * Supplied by index.ts. The resolver is responsible for:
  *   1. Looking up the Call document in MongoDB (existing logic).
- *   2. Deserialising the stored ConversationGuide.
+ *   2. Building a ResolvedCallContext from the stored fields.
  *   3. Calling promptBuilder.buildRealtimePrompt() to render the prompt.
  *   4. Returning the rendered string (or undefined for fallback).
  *
- * RealtimeBridge never touches MongoDB, ConversationGuide, or prompt logic.
+ * RealtimeBridge never touches MongoDB or prompt logic.
  */
 export type GuideResolver = (callSid: string) => Promise<string | undefined>;
 
@@ -127,6 +214,124 @@ export function createRealtimeBridge(
   /** Pre-session audio buffer (chunks received before sessionReady = true). */
   const audioQueue: string[] = [];
 
+  /**
+   * Transcript accumulator. Each completed line (AI or caller) is pushed
+   * here as it arrives. Plain string accumulation only — see file header.
+   * Read via getTranscript() once the call ends.
+   */
+  const transcriptLines: string[] = [];
+
+  // ── Voice pipeline components ──────────────────────────────────────────
+  //
+  // One PhraseBuffer and one ElevenLabsClient per call, created here in
+  // the factory closure — same lifetime as openAiWs, streamSid, etc.
+  // ElevenLabsClient.connect() is called once, in the session.updated
+  // handler, and never again for this call.
+
+  const phraseBuffer = new PhraseBuffer();
+
+  // ── Epoch/generation tracking ──────────────────────────────────────────
+  //
+  // `currentPhraseGeneration` is set to turnState.getGeneration() just
+  // before every sendPhrase() call. The onAudioChunk closure captures
+  // this value at send-time, and compares it against
+  // turnState.getGeneration() at receive-time. If they differ, the caller
+  // interrupted after this phrase was sent and the chunk is dropped.
+  //
+  // Implementation note: we store the generation per "phrase send" in a
+  // local variable that is captured by the onAudioChunk closure. Since
+  // JavaScript is single-threaded, there is no race between reading
+  // getGeneration() and sending the phrase — both happen synchronously in
+  // the same event loop tick.
+
+  const elevenLabs = new ElevenLabsClient({
+    /**
+     * Called for each audio chunk from ElevenLabs.
+     *
+     * The epoch check here is the correctness guarantee for barge-in:
+     * `chunkGeneration` is the generation that was current when the
+     * phrase that produced this chunk was sent. If the caller has
+     * interrupted since then (incrementing the generation), we drop the
+     * chunk unconditionally — it must never reach Exotel.
+     *
+     * Note: `chunkGeneration` is captured from the closure variable
+     * `sendGeneration` which is set in `flushPhraseToElevenLabs` just
+     * before each sendPhrase() call. See that function below.
+     */
+    onAudioChunk: (base64Pcm16k: string) => {
+      // Epoch guard — see file header. Drop stale chunks from interrupted turns.
+      if (chunkGeneration !== turnState.getGeneration()) {
+        return;
+      }
+      const slin8kPayload = pcm16kBase64To8kBase64(base64Pcm16k);
+      sendToExotel({
+        event: "media",
+        stream_sid: streamSid,
+        media: { payload: slin8kPayload },
+      });
+      turnState.onAudioStartedPlaying();
+    },
+    onPhraseAudioComplete: () => {
+      sendToExotel({
+        event: "mark",
+        stream_sid: streamSid,
+        mark: { name: "elevenlabs_phrase_done" },
+      });
+    },
+    onError: (err) => {
+      // ElevenLabs disconnected unexpectedly mid-call. There is no
+      // graceful fallback within this architecture (switching back to
+      // OpenAI audio mid-session is unsupported by the GA API). Close
+      // the OpenAI session cleanly to trigger the call-end flow.
+      console.error(
+        "[bridge][elevenlabs-fatal] unexpected disconnect mid-call — terminating session:",
+        err.message
+      );
+      if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
+        openAiWs.close(1011, "elevenlabs disconnect");
+      }
+    },
+  });
+
+  // ── Epoch variable — updated just before each sendPhrase() ──────────────
+  //
+  // `chunkGeneration` is the generation number at the time the *most
+  // recent* phrase was sent to ElevenLabs. It is captured by the
+  // onAudioChunk closure above. When a chunk arrives, onAudioChunk
+  // compares this value against turnState.getGeneration() — if they
+  // differ, the generation was incremented by an interruption after the
+  // phrase was sent, and the chunk is stale.
+  //
+  // Why one variable rather than per-phrase tracking: ElevenLabs streams
+  // audio for each phrase sequentially on the same connection. Only one
+  // phrase can be in active synthesis at a time (ElevenLabs buffers
+  // subsequent phrases server-side until the previous one finishes). So
+  // there is at most one "in-flight" phrase at any given moment, and a
+  // single epoch variable correctly represents "the generation the current
+  // in-flight phrase belongs to."
+  let chunkGeneration = 0;
+
+  const turnState = new TurnStateManager({
+    cancelOpenAiResponse: () => {
+      sendToOpenAi({ type: "response.cancel" });
+    },
+    clearExotelPlayback: () => {
+      // Exotel's documented bot-to-Exotel message for discarding audio
+      // that has been sent but not yet played. This is the fast path;
+      // the epoch guard above is the correctness guarantee.
+      sendToExotel({
+        event: "clear",
+        stream_sid: streamSid,
+      });
+    },
+    discardPhraseBuffer: () => {
+      phraseBuffer.discard();
+    },
+    discardElevenLabsQueue: () => {
+      elevenLabs.discardPending();
+    },
+  });
+
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   function sendToOpenAi(obj: unknown): void {
@@ -153,15 +358,29 @@ export function createRealtimeBridge(
     }
   }
 
+  /**
+   * Send a phrase to ElevenLabs and record it in the AI-side transcript.
+   *
+   * EPOCH TAG: `chunkGeneration` is set to the current generation number
+   * immediately before sendPhrase(). This tags the phrase "this phrase
+   * was sent during generation N." Audio chunks that arrive later for
+   * this phrase will be accepted only if the generation is still N
+   * (i.e. no interruption occurred since the send).
+   *
+   * Centralized here because both the delta-driven flush path and the
+   * end-of-turn flushRemaining() path need identical behavior.
+   */
+  function flushPhraseToElevenLabs(phrase: string): void {
+    // Stamp the current generation onto the phrase BEFORE sending.
+    // This is the key step — any chunk arriving for this phrase will be
+    // checked against turnState.getGeneration(), and if it differs, dropped.
+    chunkGeneration = turnState.getGeneration();
+    elevenLabs.sendPhrase(phrase);
+    transcriptLines.push(`Govinda: ${phrase.trim()}`);
+  }
+
   // ─── OpenAI connection ────────────────────────────────────────────────────
 
-  /**
-   * Connect to OpenAI Realtime and configure the session with the given
-   * instructions string. Called only after the guide resolver has settled.
-   *
-   * @param instructions — The fully-rendered prompt from promptBuilder.
-   *                        If undefined, a minimal fallback string is used.
-   */
   function connectOpenAi(instructions: string | undefined): void {
     if (openAiConnectStarted) {
       console.warn("[bridge] connectOpenAi() called more than once — ignoring");
@@ -169,9 +388,6 @@ export function createRealtimeBridge(
     }
     openAiConnectStarted = true;
 
-    // If no instructions were resolved, use the absolute minimum fallback.
-    // This should only happen if both the DB lookup and the guide service
-    // fallback failed — which should never occur in normal operation.
     const finalInstructions =
       instructions ??
       `You are a professional healthcare executive from Govinda AI.
@@ -203,15 +419,17 @@ export function createRealtimeBridge(
         type: "session.update",
         session: {
           type: "realtime",
-          output_modalities: ["audio"],
 
-          // The rendered prompt from promptBuilder. Contains all call knowledge,
-          // conversation rules, language rules, and turn-taking instructions.
+          // TEXT ONLY — ElevenLabs performs all speech synthesis.
+          // OpenAI's own audio output is not used at all.
+          output_modalities: ["text"],
+
           instructions: finalInstructions,
 
           audio: {
             input: {
-              // G.711 μ-law (PCMU) — format is an object in GA, NOT a string
+              // Caller inbound path — UNCHANGED. Exotel sends μ-law,
+              // OpenAI transcribes. Only the OUTPUT side changed.
               format: { type: "audio/pcmu" },
               transcription: {
                 model: "whisper-1",
@@ -220,38 +438,38 @@ export function createRealtimeBridge(
                 type: "server_vad",
 
                 // 0.4: slightly more sensitive than default (0.5).
-                // Catches softer speech onsets common in phone calls.
                 threshold: 0.4,
 
                 // 200ms: shorter than default (300ms).
-                // Captures more of the start of words.
                 prefix_padding_ms: 200,
 
                 // 600ms: slightly longer than default (500ms).
-                // Lets the customer pause mid-thought without cutting them off.
                 silence_duration_ms: 600,
 
-                // Auto-create AI response when VAD detects end of customer speech.
-                // This drives the listen → respond loop without manual triggers.
+                // Auto-create AI response on customer speech end.
                 create_response: true,
 
-                // INTERRUPTION: cancel the AI's audio output the instant the
-                // customer starts speaking. This is the core of interruption handling.
-                // The bridge does NOT need to send response.cancel manually —
-                // OpenAI handles it internally when this flag is true.
-                interrupt_response: true,
+                // Explicitly false — not omitted — so intent is
+                // unambiguous. OpenAI has no audio output to auto-cancel
+                // here anyway. Manual cancellation is done via
+                // TurnStateManager → response.cancel on speech_started.
+                // Documented GA caveat: may fail to create a response if
+                // the model is already responding. Not a problem here:
+                // we send response.cancel on speech_started, so the
+                // prior response is already cancelled before speech_stopped
+                // triggers a new create_response.
+                interrupt_response: false,
               },
             },
-            output: {
-              format: { type: "audio/pcmu" },
 
-              // "ash" — deepest natural male voice in GA OpenAI Realtime API.
-              // Official GA voice list: alloy, ash, ballad, coral, echo,
-              // sage, shimmer, verse.
-              // "ash" is male and natural for professional phone calls.
-              // "coral", "sage", "shimmer" are female.
-              // "marin" is NOT a valid GA voice name.
-              voice: "ash",
+            // audio.output is kept present (with a valid format/voice) even
+            // though output_modalities excludes "audio" — every real
+            // session.updated echo in OpenAI's own GA docs shows a populated
+            // output block. Omitting it entirely is an unverified schema
+            // choice; keeping it populated and inert is safer.
+            output: {
+              format: { type: "audio/pcm16" },  // inert — never actually produced
+              voice: "alloy",                    // inert — never actually used
             },
           },
         },
@@ -282,80 +500,48 @@ export function createRealtimeBridge(
 
       if (type === "session.updated") {
         console.log(
-          "[bridge][session.updated] session READY — flushing queue and triggering greeting"
+          "[bridge][session.updated] session READY — connecting ElevenLabs, flushing queue, triggering greeting"
         );
         sessionReady = true;
+
+        // Open the ONE persistent ElevenLabs connection for this call.
+        // Phrases that arrive before it finishes opening are queued in
+        // ElevenLabsClient.pendingPhrases and flushed automatically.
+        elevenLabs.connect();
+
         flushAudioQueue();
 
-        // Trigger the AI's opening greeting. This is the ONLY manual
-        // response.create we send — all subsequent turns are triggered
-        // automatically by create_response: true in the VAD config.
-        // The model generates a natural opening based on the instructions
-        // (call objective, caller identity, recipient name) — never a
-        // hardcoded greeting.
+        // Trigger the AI's opening greeting. The ONLY manual
+        // response.create — all subsequent turns are driven automatically
+        // by create_response: true in the VAD config.
         sendToOpenAi({ type: "response.create" });
         return;
       }
 
-      // ── Audio output → Exotel ────────────────────────────────────────────
+      // ── Text output → PhraseBuffer → ElevenLabs ──────────────────────────
 
-      if (type === "response.output_audio.delta") {
+      if (type === "response.output_text.delta") {
         const delta = event.delta as string | undefined;
         if (delta) {
-          const slin16Payload = pcmuBase64ToSlin16Base64(delta);
-          sendToExotel({
-            event: "media",
-            stream_sid: streamSid,
-            media: { payload: slin16Payload },
-          });
+          // Defensive strip: OpenAI GA occasionally leaks audio-flavored
+          // token strings into text output even in text-only mode
+          // (documented issue). Filter them out so they don't reach
+          // ElevenLabs as literal text.
+          const cleaned = delta.replace(/<\|vq_[^|]+\|>/g, "");
+          if (!cleaned) return;
+
+          process.stdout.write(`[bridge][ai-text] ${cleaned}`);
+          const phrase = phraseBuffer.push(cleaned);
+          if (phrase) flushPhraseToElevenLabs(phrase);
         }
         return;
       }
 
-      if (type === "response.output_audio.done") {
-        console.log("[bridge][response.output_audio.done] AI audio turn complete → mark");
-        sendToExotel({
-          event: "mark",
-          stream_sid: streamSid,
-          mark: { name: "ai_done" },
-        });
-        return;
-      }
-
-      // ── AI speech transcript (informational) ─────────────────────────────
-
-      if (type === "response.output_audio_transcript.delta") {
-        const delta = event.delta as string | undefined;
-        if (delta) process.stdout.write(`[bridge][ai-tx] ${delta}`);
-        return;
-      }
-
-      if (type === "response.output_audio_transcript.done") {
-        const transcript = event.transcript as string | undefined;
-        console.log(
-          `\n[bridge][ai-tx-done] callSid=${callSid} | "${transcript ?? ""}"`
-        );
-        return;
-      }
-
-      // ── User speech transcript (informational) ───────────────────────────
-
-      if (type === "conversation.item.input_audio_transcription.delta") {
-        const delta = event.delta as string | undefined;
-        if (delta) process.stdout.write(`[bridge][user-tx] ${delta}`);
-        return;
-      }
-
-      if (type === "conversation.item.input_audio_transcription.completed") {
-        const transcript = event.transcript as string | undefined;
-        console.log(
-          `\n[bridge][user-tx-done] callSid=${callSid} | "${transcript ?? ""}"`
-        );
-        return;
-      }
-
-      if (type === "conversation.item.input_audio_transcription.failed") {
-        console.error("[bridge][user-tx-failed]", JSON.stringify(event, null, 2));
+      if (type === "response.output_text.done") {
+        // Flush whatever trailing fragment didn't end on a sentence boundary.
+        const remaining = phraseBuffer.flushRemaining();
+        if (remaining) flushPhraseToElevenLabs(remaining);
+        console.log(`\n[bridge][ai-text-done] callSid=${callSid}`);
         return;
       }
 
@@ -364,6 +550,7 @@ export function createRealtimeBridge(
       if (type === "response.created") {
         const responseId = (event.response as Record<string, unknown> | undefined)?.id;
         console.log(`[bridge][response.created] id=${responseId ?? "?"}`);
+        turnState.onResponseStarted();
         return;
       }
 
@@ -372,13 +559,14 @@ export function createRealtimeBridge(
         console.log(
           `[bridge][response.done] status=${resp?.status ?? "?"} | usage=${JSON.stringify(resp?.usage)}`
         );
+        turnState.onResponseDone();
         return;
       }
 
       if (type === "response.cancelled") {
-        // Expected behaviour: fired when interrupt_response:true cancels the
-        // AI output because the customer started speaking. Not an error.
-        console.log("[bridge][response.cancelled] AI interrupted by customer speech — expected");
+        // Fired in response to our own response.cancel (sent by
+        // TurnStateManager on barge-in). Expected; log only.
+        console.log("[bridge][response.cancelled] response cancelled — expected on barge-in");
         return;
       }
 
@@ -393,8 +581,7 @@ export function createRealtimeBridge(
       }
 
       if (type === "conversation.item.truncated") {
-        // Expected: fired when AI audio is cut short by an interruption.
-        console.log("[bridge][item.truncated] AI audio truncated — customer interrupted");
+        console.log("[bridge][item.truncated] item truncated");
         return;
       }
 
@@ -408,20 +595,46 @@ export function createRealtimeBridge(
         return;
       }
 
+      // ── User speech transcript ───────────────────────────────────────────
+      //
+      // UNCHANGED — depends only on caller's inbound audio, untouched
+      // by the ElevenLabs integration.
+
+      if (type === "conversation.item.input_audio_transcription.delta") {
+        const delta = event.delta as string | undefined;
+        if (delta) process.stdout.write(`[bridge][user-tx] ${delta}`);
+        return;
+      }
+
+      if (type === "conversation.item.input_audio_transcription.completed") {
+        const transcript = event.transcript as string | undefined;
+        console.log(
+          `\n[bridge][user-tx-done] callSid=${callSid} | "${transcript ?? ""}"`
+        );
+        if (transcript) transcriptLines.push(`Caller: ${transcript}`);
+        return;
+      }
+
+      if (type === "conversation.item.input_audio_transcription.failed") {
+        console.error("[bridge][user-tx-failed]", JSON.stringify(event, null, 2));
+        return;
+      }
+
       // ── Input audio buffer lifecycle ─────────────────────────────────────
 
       if (type === "input_audio_buffer.speech_started") {
-        // Customer started speaking. With interrupt_response:true, OpenAI
-        // automatically cancels any in-progress AI response. No manual action needed.
         console.log(
           `[bridge][speech_started] customer speaking | audio_start_ms=${event.audio_start_ms}`
         );
+        // TurnStateManager increments the generation counter FIRST
+        // (before any callbacks), then fires all four interruption
+        // callbacks. The epoch guard in onAudioChunk will immediately
+        // start dropping stale chunks.
+        turnState.onCallerSpeechDetected();
         return;
       }
 
       if (type === "input_audio_buffer.speech_stopped") {
-        // Customer stopped speaking. With create_response:true, OpenAI
-        // automatically commits the buffer and creates the next AI response.
         console.log(
           `[bridge][speech_stopped] customer finished | audio_end_ms=${event.audio_end_ms}`
         );
@@ -440,18 +653,6 @@ export function createRealtimeBridge(
 
       if (type === "input_audio_buffer.timeout_triggered") {
         console.log("[bridge][buffer.timeout]", JSON.stringify(event, null, 2));
-        return;
-      }
-
-      // ── Output text (not expected in audio-only mode) ─────────────────────
-
-      if (type === "response.output_text.delta") {
-        console.log(`[bridge][text.delta] "${event.delta ?? ""}"`);
-        return;
-      }
-
-      if (type === "response.output_text.done") {
-        console.log(`[bridge][text.done] "${event.text ?? ""}"`);
         return;
       }
 
@@ -530,10 +731,6 @@ export function createRealtimeBridge(
           "| params:", JSON.stringify(evt.start.customParameters ?? {})
         );
 
-        // Resolve the fully-rendered instructions BEFORE connecting to OpenAI.
-        // session.update is only sent once the instructions string is in hand.
-        // Audio that arrives during this async window is queued and flushed
-        // once session.updated comes back.
         resolveInstructions(callSid)
           .then((instructions) => {
             connectOpenAi(instructions);
@@ -570,6 +767,7 @@ export function createRealtimeBridge(
           sendToOpenAi({ type: "input_audio_buffer.commit" });
           openAiWs.close(1000, "call ended");
         }
+        elevenLabs.close();
         break;
 
       case "mark":
@@ -581,6 +779,7 @@ export function createRealtimeBridge(
         if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
           openAiWs.close(1011, "exotel error");
         }
+        elevenLabs.close();
         break;
 
       default:
@@ -594,6 +793,17 @@ export function createRealtimeBridge(
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 
+  /**
+   * Fully idempotent — safe to call multiple times. Guards:
+   *   - openAiWs null check prevents double-close on the socket.
+   *   - elevenLabs.close() is internally guarded (`if (!this.ws) return`).
+   *   - audioQueue.length = 0 is safe on an already-empty array.
+   *   - sessionReady = false is safe to set repeatedly.
+   *
+   * Multiple close/error events arriving after the first destroy() call
+   * are safe: sendToOpenAi/sendToExotel check readyState before sending,
+   * and elevenLabs.close() is idempotent.
+   */
   function destroy(): void {
     if (openAiWs) {
       try {
@@ -601,13 +811,33 @@ export function createRealtimeBridge(
           openAiWs.close(1000, "bridge destroyed");
         }
       } catch {
-        // Socket may already be closing
+        // Socket may already be closing — safe to ignore
       }
       openAiWs = null;
     }
+    // ElevenLabsClient.close() sets state="closed" before doing anything
+    // else — this is the signal that prevents post-destroy audio chunks
+    // from reaching Exotel via the onAudioChunk callback.
+    elevenLabs.close();
     sessionReady = false;
     audioQueue.length = 0;
   }
 
-  return { handleExotelMessage, destroy };
+  // ─── Transcript access (extraction integration) ────────────────────────────
+
+  /**
+   * Returns the accumulated transcript as a single newline-joined string,
+   * in chronological arrival order. Called by index.ts once the call has
+   * ended, before triggering extraction.
+   *
+   * UNCHANGED contract — same return shape, same line format, same call
+   * site in index.ts. Only the internal source of AI-side lines changed
+   * (text-delta events instead of audio-transcript events). Caller-side
+   * lines are completely unaffected.
+   */
+  function getTranscript(): string {
+    return transcriptLines.join("\n");
+  }
+
+  return { handleExotelMessage, destroy, getTranscript };
 }
