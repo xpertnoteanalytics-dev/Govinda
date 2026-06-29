@@ -75,13 +75,13 @@ export function RecentCalls() {
         <ul className="mt-4 space-y-2">
           {data.recent.map((r) => (
             <li
-              key={`${r.placeName}-${r.createdAt}`}
+              key={`${r.recipientName}-${r.createdAt}`}
               className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2.5 text-sm dark:border-white/10 dark:bg-white/5"
             >
               <div className="flex min-w-0 items-center gap-2">
                 <Phone className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" />
                 <div className="min-w-0">
-                  <p className="truncate font-medium text-ink dark:text-white">{r.placeName}</p>
+                  <p className="truncate font-medium text-ink dark:text-white">{r.recipientName}</p>
                   <p className="truncate text-xs text-ink-muted dark:text-slate-500">
                     {r.initiatedBy?.name ? `${r.initiatedBy.name} · ` : ""}
                     {new Date(r.createdAt).toLocaleString()}
