@@ -443,8 +443,22 @@ export function createRealtimeBridge(
               // Caller inbound path — UNCHANGED. Exotel sends μ-law,
               // OpenAI transcribes. Only the OUTPUT side changed.
               format: { type: "audio/pcmu" },
+              // FIX (2026-06-30): whisper-1 was confirmed (via call logs)
+              // to return empty transcripts or hallucinate unrelated
+              // English text ("He's gotta...") on Hindi/Hinglish caller
+              // audio over telephony-quality (8kHz, G.711) input. The AI's
+              // responses were correct given what it was told the caller
+              // said — the failure was entirely in transcription, not in
+              // VAD, response generation, or any other part of the bridge.
+              // Switched to gpt-4o-mini-transcribe (current GA Realtime
+              // transcription model, valid under session.audio.input.
+              // transcription per OpenAI's documented schema — same shape
+              // as whisper-1, just a different model id) with an explicit
+              // language hint so the model biases toward Hindi instead of
+              // defaulting to English guesses.
               transcription: {
-                model: "whisper-1",
+                model: "gpt-4o-mini-transcribe",
+                language: "hi",
               },
               turn_detection: {
                 type: "server_vad",
