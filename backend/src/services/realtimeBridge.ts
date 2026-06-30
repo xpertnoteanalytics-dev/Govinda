@@ -483,13 +483,22 @@ export function createRealtimeBridge(
             // FIX: "audio/pcm16" is NOT a valid format.type value and was
             // causing OpenAI to reject the entire session.update with
             // invalid_request_error (session.audio.output.format.type).
-            // Valid values are "audio/pcm", "audio/pcmu", "audio/pcma".
-            // Using "audio/pcm" here — this block stays functionally inert
-            // since output_modalities excludes "audio", it just needs to be
-            // schema-valid for OpenAI to accept the session.update at all.
+            // Valid type values are "audio/pcm", "audio/pcmu", "audio/pcma".
+            //
+            // FIX 2: once type was corrected to "audio/pcm", OpenAI then
+            // rejected the session.update again with a second error:
+            // "Missing required parameter: 'session.audio.output.format.rate'".
+            // The GA schema requires `rate` alongside `type` — it is not
+            // optional or defaulted. Added rate: 24000 (OpenAI's standard
+            // PCM rate) to satisfy the schema.
+            //
+            // This block stays functionally inert — output_modalities
+            // excludes "audio" so no audio.output is ever actually produced —
+            // it just has to be fully schema-valid for OpenAI to accept the
+            // session.update at all.
             output: {
-              format: { type: "audio/pcm" },  // inert — never actually produced
-              voice: "alloy",                  // inert — never actually used
+              format: { type: "audio/pcm", rate: 24000 },  // inert — never actually produced
+              voice: "alloy",                               // inert — never actually used
             },
           },
         },
