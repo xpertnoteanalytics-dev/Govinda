@@ -69,6 +69,18 @@
 //   (it won't be used since output_modalities excludes "audio") is the
 //   safe, documented-shape choice.
 //
+//   FIX (2026-06-30): the format type MUST be one of OpenAI's actually
+//   supported values: "audio/pcm", "audio/pcmu", or "audio/pcma".
+//   The previous value "audio/pcm16" is NOT valid and caused OpenAI to
+//   reject the entire session.update with an invalid_request_error,
+//   which meant session.updated never fired, which meant ElevenLabs
+//   never connected, the audio queue never flushed, and no greeting
+//   was ever triggered — i.e. total silence on every call. Changed to
+//   "audio/pcm" below. This block is still functionally inert (no
+//   audio.output is ever produced because output_modalities excludes
+//   "audio"), but it now has to be schema-valid for OpenAI to accept
+//   the session.update at all.
+//
 // ── ElevenLabs disconnect handling ────────────────────────────────────
 //
 // If ElevenLabs disconnects unexpectedly mid-call, the bridge terminates
@@ -467,9 +479,17 @@ export function createRealtimeBridge(
             // session.updated echo in OpenAI's own GA docs shows a populated
             // output block. Omitting it entirely is an unverified schema
             // choice; keeping it populated and inert is safer.
+            //
+            // FIX: "audio/pcm16" is NOT a valid format.type value and was
+            // causing OpenAI to reject the entire session.update with
+            // invalid_request_error (session.audio.output.format.type).
+            // Valid values are "audio/pcm", "audio/pcmu", "audio/pcma".
+            // Using "audio/pcm" here — this block stays functionally inert
+            // since output_modalities excludes "audio", it just needs to be
+            // schema-valid for OpenAI to accept the session.update at all.
             output: {
-              format: { type: "audio/pcm16" },  // inert — never actually produced
-              voice: "alloy",                    // inert — never actually used
+              format: { type: "audio/pcm" },  // inert — never actually produced
+              voice: "alloy",                  // inert — never actually used
             },
           },
         },
