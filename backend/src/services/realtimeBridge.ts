@@ -458,7 +458,6 @@ export function createRealtimeBridge(
               // defaulting to English guesses.
               transcription: {
                 model: "gpt-4o-mini-transcribe",
-                language: "hi",
               },
               turn_detection: {
                 type: "server_vad",
