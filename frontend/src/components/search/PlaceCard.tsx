@@ -35,7 +35,7 @@ export function PlaceCard({ place, index = 0 }: PlaceCardProps) {
 
   return (
     <>
-      <CallScriptModal open={callOpen} onClose={() => setCallOpen(false)} />
+      <CallScriptModal place={place} open={callOpen} onClose={() => setCallOpen(false)} />
       <EmailComposeModal place={place} open={emailOpen} onClose={() => setEmailOpen(false)} />
       <WhatsAppComposeModal
         place={place}
