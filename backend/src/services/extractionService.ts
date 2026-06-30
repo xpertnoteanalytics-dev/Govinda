@@ -60,7 +60,7 @@ ${input.conversationTranscript}
 Return ONLY valid JSON matching this exact shape. Omit a key entirely (do not include it as null or empty) if that section has no real data in the conversation:
 
 {
-  "summary": "one or two sentence neutral summary of what happened",
+  "summary": "a clear, complete recap of the whole call — what the caller wanted, what was discussed, what the AI told them, and how the call concluded. Write 3-5 sentences in plain natural language, not a single flat line. Mention specific details actually said (names, quantities, dates, products) so someone who didn't hear the call understands exactly what happened.",
   "sentiment": "positive" | "neutral" | "negative",
   "appointment": {
     "patientName": string,
