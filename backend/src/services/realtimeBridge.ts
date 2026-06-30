@@ -101,6 +101,18 @@
 // is untouched. The transcript records what the AI generated (intent),
 // not precisely what the caller heard (may differ if interrupted) —
 // this is the stated, deliberate choice for extraction purposes.
+//
+// ── DIAGNOSTIC BUILD NOTICE ─────────────────────────────────────────────
+//
+// This file has had TEMPORARY diagnostic logging added, marked with the
+// "[DIAG]" prefix on every line. These are pure console.log additions:
+// they do not modify any state, do not call any additional methods, do
+// not change control flow, timing, or return values. They exist solely
+// to capture event ordering, generation numbers, and response/item
+// identifiers from a real call to diagnose the language-switch /
+// barge-in issue. Every [DIAG] line should be removed once the
+// diagnostic run has been captured and analyzed — search for "[DIAG]"
+// to find and strip them all.
 
 import WebSocket from "ws";
 import { env } from "../config/env";
@@ -271,6 +283,15 @@ export function createRealtimeBridge(
      * before each sendPhrase() call. See that function below.
      */
     onAudioChunk: (base64Pcm16k: string) => {
+      // [DIAG] Log every ElevenLabs audio chunk, including whether it
+      // will be dropped by the epoch guard, BEFORE the guard runs.
+      // Does not call any extra methods or change the guard's behavior.
+      const __diagCurrentGen = turnState.getGeneration();
+      const __diagDropped = chunkGeneration !== __diagCurrentGen;
+      console.log(
+        `[DIAG][${Date.now()}][elevenlabs-chunk] callSid=${callSid} streamSid=${streamSid} chunkGeneration=${chunkGeneration} currentGeneration=${__diagCurrentGen} dropped=${__diagDropped} bytes=${base64Pcm16k.length}`
+      );
+
       // Epoch guard — see file header. Drop stale chunks from interrupted turns.
       if (chunkGeneration !== turnState.getGeneration()) {
         return;
@@ -325,6 +346,11 @@ export function createRealtimeBridge(
 
   const turnState = new TurnStateManager({
     cancelOpenAiResponse: () => {
+      // [DIAG] Log the exact moment response.cancel is sent, with the
+      // generation at send time. Pure log — does not alter the send.
+      console.log(
+        `[DIAG][${Date.now()}][response.cancel-SEND] callSid=${callSid} generation=${turnState.getGeneration()}`
+      );
       sendToOpenAi({ type: "response.cancel" });
     },
     clearExotelPlayback: () => {
@@ -387,6 +413,14 @@ export function createRealtimeBridge(
     // This is the key step — any chunk arriving for this phrase will be
     // checked against turnState.getGeneration(), and if it differs, dropped.
     chunkGeneration = turnState.getGeneration();
+
+    // [DIAG] Log every phrase flushed to ElevenLabs along with the
+    // generation it was stamped with. Pure log, placed after the
+    // existing assignment so it reflects the real stamped value.
+    console.log(
+      `[DIAG][${Date.now()}][flush-to-elevenlabs] callSid=${callSid} chunkGeneration=${chunkGeneration} phrase=${JSON.stringify(phrase.trim())}`
+    );
+
     elevenLabs.sendPhrase(phrase);
     transcriptLines.push(`Govinda: ${phrase.trim()}`);
   }
@@ -531,6 +565,12 @@ export function createRealtimeBridge(
 
       const type = event.type as string;
 
+      // [DIAG] Generic event-order log — fires for every single event
+      // type received from OpenAI, before any branching logic runs.
+      // This is purely additive and does not affect which branch below
+      // ultimately handles the event.
+      console.log(`[DIAG][${Date.now()}] OpenAI Event: ${type}`);
+
       // ── Session lifecycle ────────────────────────────────────────────────
 
       if (type === "session.created") {
@@ -563,6 +603,13 @@ export function createRealtimeBridge(
       // ── Text output → PhraseBuffer → ElevenLabs ──────────────────────────
 
       if (type === "response.output_text.delta") {
+        // [DIAG] Dump the COMPLETE raw event for this delta. We do not
+        // assume response_id, item_id, output_index, or content_index
+        // exist on this event — log everything as-received so the real
+        // schema can be confirmed from an actual call before any
+        // structured field extraction is added.
+        console.log("[DIAG][delta-event]", JSON.stringify(event));
+
         const delta = event.delta as string | undefined;
         if (delta) {
           // Defensive strip: OpenAI GA occasionally leaks audio-flavored
@@ -591,6 +638,13 @@ export function createRealtimeBridge(
 
       if (type === "response.created") {
         const responseId = (event.response as Record<string, unknown> | undefined)?.id;
+
+        // [DIAG] response.created — response_id and generation at the
+        // moment this event was received.
+        console.log(
+          `[DIAG][${Date.now()}][response.created] callSid=${callSid} response_id=${responseId ?? "?"} generation=${turnState.getGeneration()}`
+        );
+
         console.log(`[bridge][response.created] id=${responseId ?? "?"}`);
         turnState.onResponseStarted();
         return;
@@ -598,6 +652,13 @@ export function createRealtimeBridge(
 
       if (type === "response.done") {
         const resp = event.response as Record<string, unknown> | undefined;
+
+        // [DIAG] response.done — response_id, status, and generation at
+        // the moment this event was received.
+        console.log(
+          `[DIAG][${Date.now()}][response.done] callSid=${callSid} response_id=${resp?.id ?? "?"} status=${resp?.status ?? "?"} generation=${turnState.getGeneration()}`
+        );
+
         console.log(
           `[bridge][response.done] status=${resp?.status ?? "?"} | usage=${JSON.stringify(resp?.usage)}`
         );
@@ -606,6 +667,12 @@ export function createRealtimeBridge(
       }
 
       if (type === "response.cancelled") {
+        // [DIAG] response.cancelled (ack) — generation at the moment
+        // the cancellation acknowledgment was received.
+        console.log(
+          `[DIAG][${Date.now()}][response.cancelled-ACK] callSid=${callSid} generation=${turnState.getGeneration()}`
+        );
+
         // Fired in response to our own response.cancel (sent by
         // TurnStateManager on barge-in). Expected; log only.
         console.log("[bridge][response.cancelled] response cancelled — expected on barge-in");
@@ -665,6 +732,13 @@ export function createRealtimeBridge(
       // ── Input audio buffer lifecycle ─────────────────────────────────────
 
       if (type === "input_audio_buffer.speech_started") {
+        // [DIAG] Generation BEFORE onCallerSpeechDetected() runs, so we
+        // can confirm exactly when the increment happens relative to
+        // this event being received.
+        console.log(
+          `[DIAG][${Date.now()}][speech_started] callSid=${callSid} generation_BEFORE=${turnState.getGeneration()}`
+        );
+
         console.log(
           `[bridge][speech_started] customer speaking | audio_start_ms=${event.audio_start_ms}`
         );
@@ -673,10 +747,21 @@ export function createRealtimeBridge(
         // callbacks. The epoch guard in onAudioChunk will immediately
         // start dropping stale chunks.
         turnState.onCallerSpeechDetected();
+
+        // [DIAG] Generation AFTER onCallerSpeechDetected() runs.
+        console.log(
+          `[DIAG][${Date.now()}][speech_started] callSid=${callSid} generation_AFTER=${turnState.getGeneration()}`
+        );
         return;
       }
 
       if (type === "input_audio_buffer.speech_stopped") {
+        // [DIAG] speech_stopped — generation at the moment this event
+        // was received.
+        console.log(
+          `[DIAG][${Date.now()}][speech_stopped] callSid=${callSid} generation=${turnState.getGeneration()}`
+        );
+
         console.log(
           `[bridge][speech_stopped] customer finished | audio_end_ms=${event.audio_end_ms}`
         );
