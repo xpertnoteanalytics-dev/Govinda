@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { ModalShell } from "@/components/ui/ModalShell";
 import { StatusBanner } from "@/components/ui/StatusBanner";
 import { ActionButton } from "@/components/ui/ActionButton";
+import type { PlaceResult } from "@/lib/places-types";
 
 const OBJECTIVE_OPTIONS: { id: ObjectiveType; label: string; hint: string }[] = [
   { id: "appointment_booking",    label: "Appointment",     hint: "Book a slot"         },
@@ -37,9 +38,10 @@ const TOOL_OPTIONS: { id: EnabledTool; label: string }[] = [
 interface CallScriptModalProps {
   open: boolean;
   onClose: () => void;
+  place?: PlaceResult;
 }
 
-export function CallScriptModal({ open, onClose }: CallScriptModalProps) {
+export function CallScriptModal({ open, onClose, place }: CallScriptModalProps) {
   const [recipientName,      setRecipientName]      = useState("");
   const [phoneNumber,        setPhoneNumber]        = useState("");
   const [recipientCategory,  setRecipientCategory]  = useState("");
@@ -54,9 +56,9 @@ export function CallScriptModal({ open, onClose }: CallScriptModalProps) {
 
   useEffect(() => {
     if (open) {
-      setRecipientName("");
-      setPhoneNumber("");
-      setRecipientCategory("");
+      setRecipientName(place?.name ?? "");
+      setPhoneNumber(place?.phone ?? "");
+      setRecipientCategory(place?.category ?? "");
       setObjectiveType("appointment_booking");
       setCustomObjectiveText("");
       setBusinessContext("");
@@ -65,7 +67,7 @@ export function CallScriptModal({ open, onClose }: CallScriptModalProps) {
       setError("");
       setSuccess("");
     }
-  }, [open]);
+  }, [open, place]);
 
   function toggleTool(tool: EnabledTool) {
     setEnabledTools((prev) =>
