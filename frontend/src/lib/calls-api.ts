@@ -20,11 +20,13 @@ export type EnabledTool =
   | "callback_schedule"
   | "post_call_extraction";
 
+// Matches the object returned by serializeCall() in src/services/callService.ts
 export interface CallRecord {
   id: string;
-  recipientName: string;
+  placeId?: string;
+  placeName: string;
   phoneNumber: string;
-  recipientCategory?: string;
+  category?: string;
   objectiveType?: ObjectiveType;
   customObjectiveText?: string;
   businessContext?: string;
@@ -33,8 +35,12 @@ export interface CallRecord {
   exotelCallSid?: string;
   recordingUrl?: string;
   durationSeconds?: number;
+  providerError?: string;
   notes?: string;
   enabledTools?: EnabledTool[];
+  summary?: string;
+  sentiment?: "positive" | "neutral" | "negative";
+  extractedData?: Record<string, unknown>;
   initiatedBy?: { id: string; name: string };
   createdAt: string;
   updatedAt: string;
@@ -46,7 +52,7 @@ export interface CallAnalytics {
   failedCalls: number;
   successRate: number;
   recent: Array<{
-    recipientName: string;
+    placeName: string;
     status: string;
     createdAt: string;
     durationSeconds?: number;
@@ -54,6 +60,10 @@ export interface CallAnalytics {
   }>;
 }
 
+// Request body shape — unchanged. The backend reads req.recipientName /
+// req.recipientCategory on the way in (see callService.ts initiateCall()).
+// This is a separate contract from CallRecord (the response shape) and is
+// intentionally not renamed.
 export interface InitiateCallInput {
   recipientName: string;
   phoneNumber: string;
