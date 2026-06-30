@@ -100,7 +100,7 @@ export default function CallsPage() {
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="font-semibold text-white">{call.recipientName}</p>
+                  <p className="font-semibold text-white">{call.placeName}</p>
                   <p className="text-sm text-slate-400">{call.phoneNumber}</p>
                   {call.objectiveType && (
                     <p className="mt-1 text-xs text-brand-300/90 capitalize">
@@ -112,6 +112,29 @@ export default function CallsPage() {
                     {call.initiatedBy?.name ? ` · ${call.initiatedBy.name}` : ""}
                     {call.durationSeconds != null ? ` · ${call.durationSeconds}s` : ""}
                   </p>
+
+                  {(call.summary || call.sentiment || call.extractedData) && (
+                    <div className="mt-3 space-y-1 border-t border-slate-700/50 pt-3">
+                      {call.summary && (
+                        <p className="text-sm text-slate-300">
+                          <span className="text-slate-500">AI Summary: </span>
+                          {call.summary}
+                        </p>
+                      )}
+                      {call.sentiment && (
+                        <p className="text-xs capitalize text-slate-400">
+                          <span className="text-slate-500">Sentiment: </span>
+                          {call.sentiment}
+                        </p>
+                      )}
+                      {call.extractedData &&
+                        Object.keys(call.extractedData).length > 0 && (
+                          <pre className="mt-1 whitespace-pre-wrap text-xs text-slate-400">
+                            {JSON.stringify(call.extractedData, null, 2)}
+                          </pre>
+                        )}
+                    </div>
+                  )}
                 </div>
                 <StatusBadge status={call.status} />
               </div>
