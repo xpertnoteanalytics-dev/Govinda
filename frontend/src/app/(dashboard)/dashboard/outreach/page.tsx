@@ -51,7 +51,7 @@ export default function OutreachPage() {
 
   const filteredEmails   = filterCat(emails,   "category");
   const filteredMessages = filterCat(messages, "category");
-  const filteredCalls    = filterCat(calls,    "recipientCategory");
+  const filteredCalls    = filterCat(calls,    "category");
   const totalActivities  = emails.length + messages.length + calls.length;
 
   const tabs = [
@@ -191,8 +191,8 @@ export default function OutreachPage() {
 
           {(tab === "all" || tab === "call") && filteredCalls.map((row, i) => (
             <ActivityCard key={row.id} type="call" index={i}
-              name={row.recipientName}
-              category={row.recipientCategory}
+              name={row.placeName}
+              category={row.category}
               sub={row.phoneNumber}
               meta={new Date(row.createdAt).toLocaleString()}
               status={row.status} />
