@@ -1,21 +1,32 @@
 // src/index.ts
 //
-// The GuideResolver passed to createRealtimeBridge() is the ONLY place where
-// the two layers are wired together:
+// resolveInstructions is the ONLY place where the two layers are wired
+// together:
 //   1. MongoDB lookup  (Call model)
 //   2. Prompt rendering  (promptBuilder.buildRealtimePrompt)
 //
+// It is injected into RealtimeBridge through the constructor options.
 // RealtimeBridge receives only the final rendered string and has no
 // knowledge of either layer.
 //
+// ── callSid lifecycle note ──────────────────────────────────────────────
+// RealtimeBridge connects to OpenAI immediately in its constructor, and
+// needs callSid (for resolveInstructions, Exotel stream_sid, logging) at
+// construction time. callSid is only known once Exotel's "start" event
+// arrives on the WebSocket. So construction of RealtimeBridge is delayed
+// until "start" is seen; any messages that arrive before that (in practice
+// just the "connected" event) are buffered and replayed once the bridge
+// exists — including the "start" message itself, so RealtimeBridge's own
+// handleExotelMessage() still sees and logs it normally.
+//
 // ── Integration note (extraction engine) ──────────────────────────────────
 // On WS close, the call has fully ended. The accumulated transcript
-// (bridge.getTranscript()) plus the same Call document already looked up
-// for the GuideResolver are handed to extractionTrigger.runForCall(), which
-// fires runExtraction() → dispatchExtraction() without blocking the close
-// handler. PromptBuilder, RealtimeBridge's audio/session logic, and
-// CallRequest are all untouched — this only adds one fire-and-forget call
-// at the point the call is already torn down.
+// (bridge.getTranscript()) plus a fresh Call document lookup are handed to
+// extractionTrigger.runForCall(), which fires runExtraction() →
+// dispatchExtraction() without blocking the close handler. PromptBuilder,
+// RealtimeBridge's audio/session logic, and CallRequest are all
+// untouched — this only adds one fire-and-forget call at the point the
+// call is already torn down.
 
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
@@ -24,7 +35,7 @@ import { WebSocketServer } from "ws";
 import type { RawData } from "ws";
 import type { IncomingMessage } from "http";
 import type { Socket } from "net";
-import { createRealtimeBridge } from "./services/realtimeBridge";
+import { RealtimeBridge } from "./services/realtimeBridge";
 import { Call } from "./models";
 import { buildRealtimePrompt, buildFallbackPrompt } from "./services/promptBuilder";
 import { runForCall } from "./services/extractionTrigger";
@@ -65,21 +76,29 @@ async function bootstrap() {
     console.log("[ws] Exotel voicebot connected from", req.socket.remoteAddress);
 
     // Tracks the callSid this socket resolved to, so the close handler
-    // below can look the Call document up again for extraction without
-    // needing the GuideResolver to expose anything new.
+    // below can look the Call document up again for extraction.
     let resolvedCallSid: string | undefined;
 
+    // RealtimeBridge requires callSid at construction time (it connects to
+    // OpenAI immediately in its constructor). callSid is only known once
+    // Exotel's "start" event arrives, so messages received before that
+    // point are buffered here and replayed once the bridge exists.
+    let bridge: RealtimeBridge | undefined;
+    const preStartQueue: string[] = [];
+
     /**
-     * GuideResolver — called by RealtimeBridge once it has the callSid.
+     * resolveInstructions — passed into RealtimeBridge's constructor.
+     * Called once, from the bridge's session.created handler, with the
+     * callSid it was constructed with.
      *
      * Steps:
      *   1. Look up the Call document in MongoDB by exotelCallSid.
      *   2. Build a ResolvedCallContext directly from the stored fields.
      *   3. Render it with promptBuilder.buildRealtimePrompt().
-     *   4. If nothing is found: return undefined → bridge uses its own fallback.
+     *   4. If nothing is found or lookup fails: fall back to
+     *      buildFallbackPrompt().
      */
-    const bridge = createRealtimeBridge(ws, async (callSid: string) => {
-      resolvedCallSid = callSid;
+    const resolveInstructions = async (callSid: string): Promise<string> => {
       try {
         const doc = await Call.findOne({ exotelCallSid: callSid })
           .select(
@@ -117,18 +136,53 @@ async function bootstrap() {
         );
         return buildFallbackPrompt();
       }
-    });
+    };
+
+    function buildBridge(callSid: string): RealtimeBridge {
+      return new RealtimeBridge({
+        exotelWs: ws,
+        openAiApiKey: env.openai.apiKey,
+        openAiModel: env.openai.model,
+        elevenLabsApiKey: env.elevenLabs.apiKey,
+        elevenLabsVoiceId: env.elevenLabs.voiceId,
+        callSid,
+        resolveInstructions,
+      });
+    }
 
     ws.on("message", (message: RawData) => {
       const raw = message.toString();
 
+      let parsed: { event?: string; start?: { call_sid?: string; stream_sid?: string } } | undefined;
       try {
-        const parsed = JSON.parse(raw) as { event?: string };
-        if (parsed.event && parsed.event !== "media") {
+        parsed = JSON.parse(raw);
+        if (parsed?.event && parsed.event !== "media") {
           console.log("[ws] non-media event received:", raw.slice(0, 500));
         }
       } catch {
-        // not JSON — ignore
+        // not JSON — ignore, fall through and let the bridge (if any)
+        // handle/log it as a parse failure.
+      }
+
+      if (!bridge) {
+        if (parsed?.event === "start") {
+          const callSid = parsed.start?.call_sid ?? parsed.start?.stream_sid;
+          if (!callSid) {
+            console.error("[ws] start event missing call_sid, dropping connection");
+            ws.close();
+            return;
+          }
+          resolvedCallSid = callSid;
+          bridge = buildBridge(callSid);
+          bridge.handleExotelMessage(raw);
+          for (const queued of preStartQueue) {
+            bridge.handleExotelMessage(queued);
+          }
+          preStartQueue.length = 0;
+        } else {
+          preStartQueue.push(raw);
+        }
+        return;
       }
 
       bridge.handleExotelMessage(raw);
@@ -142,14 +196,14 @@ async function bootstrap() {
       // the OpenAI socket/session flags, so ordering here doesn't risk
       // losing transcript data, but doing it first is the more obviously
       // correct order to read from a thing before discarding it.
-      triggerCallExtraction(resolvedCallSid, bridge.getTranscript());
+      triggerCallExtraction(resolvedCallSid, bridge?.getTranscript() ?? "");
 
-      bridge.destroy();
+      bridge?.destroy();
     });
 
     ws.on("error", (err) => {
       console.error("[ws] error", err.message);
-      bridge.destroy();
+      bridge?.destroy();
     });
   });
 
