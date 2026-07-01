@@ -26,6 +26,10 @@ export class ElevenLabsClient {
   private readonly options: ElevenLabsClientOptions;
   private readonly pendingPhrases: string[] = [];
 
+  // Tracks whether we've already reported a fatal error for the current
+  // connection, so a subsequent close event doesn't double-report.
+  private fatalErrorReported = false;
+
   constructor(options: ElevenLabsClientOptions) {
     this.voiceId = env.elevenLabs.voiceId;
     this.options = options;
@@ -48,6 +52,7 @@ export class ElevenLabsClient {
     }
 
     this.state = "connecting";
+    this.fatalErrorReported = false;
 
     const url =
       `${ELEVENLABS_WS_BASE}/${this.voiceId}/stream-input` +
@@ -90,7 +95,7 @@ export class ElevenLabsClient {
     capturedWs.on("message", (raw: WebSocket.RawData) => {
       if (this.state === "closed") return;
 
-      let msg: { audio?: string; isFinal?: boolean; error?: string };
+      let msg: { audio?: string; isFinal?: boolean; error?: string; message?: string; code?: string };
       try {
         msg = JSON.parse(raw.toString());
       } catch {
@@ -105,13 +110,37 @@ export class ElevenLabsClient {
         this.options.onPhraseAudioComplete?.();
       }
       if (msg.error) {
-        console.error("[ElevenLabsClient] error message from server:", msg.error);
+        // Application-level errors (quota_exceeded, invalid voice, etc.)
+        // arrive as a JSON message on the socket, not as a transport-level
+        // "error" event — the ws.on("error", ...) handler below never
+        // fires for these. Without reporting here, callers like
+        // RealtimeBridge never learn TTS failed, and the caller is left
+        // in silence until the socket eventually closes (or never).
+        console.error("[ElevenLabsClient] error message from server:", msg.error, msg.message ?? "");
+        this.reportFatalError(
+          new Error(
+            `ElevenLabs error: ${msg.error}${msg.message ? ` — ${msg.message}` : ""}`
+          )
+        );
       }
     });
 
     capturedWs.on("close", (code: number, reason: Buffer) => {
       if (capturedWs === this.ws || this.state !== "closed") {
-        console.log(`[ElevenLabsClient] closed — code=${code} reason=${reason.toString() || "(none)"}`);
+        const reasonStr = reason.toString() || "(none)";
+        console.log(`[ElevenLabsClient] closed — code=${code} reason=${reasonStr}`);
+
+        // A non-normal close (anything other than the 1000 we send
+        // ourselves in close()) that we haven't already reported via the
+        // msg.error path above is still a fatal condition the bridge
+        // needs to know about — e.g. if the server closes without ever
+        // sending a JSON error frame.
+        if (this.state !== "closed" || !this.fatalErrorReported) {
+          if (code !== 1000 && this.state !== "closed") {
+            this.reportFatalError(new Error(`ElevenLabs socket closed unexpectedly — code=${code} reason=${reasonStr}`));
+          }
+        }
+
         this.state = "closed";
         this.ws = null;
       }
@@ -119,9 +148,7 @@ export class ElevenLabsClient {
 
     capturedWs.on("error", (err: Error) => {
       console.error("[ElevenLabsClient] connection error:", err.message);
-      if (this.state !== "closed") {
-        this.options.onError?.(err);
-      }
+      this.reportFatalError(err);
     });
   }
 
@@ -149,10 +176,11 @@ export class ElevenLabsClient {
   }
 
   close(): void {
+    const wasAlreadyClosed = this.state === "closed";
     this.state = "closed";
     this.pendingPhrases.length = 0;
 
-    if (!this.ws) return;
+    if (!this.ws || wasAlreadyClosed) return;
     try {
       if (this.ws.readyState === WebSocket.OPEN) {
         this.sendRaw({ text: "" });
@@ -166,6 +194,12 @@ export class ElevenLabsClient {
 
   isOpen(): boolean {
     return this.state === "open";
+  }
+
+  private reportFatalError(err: Error): void {
+    if (this.fatalErrorReported) return;
+    this.fatalErrorReported = true;
+    this.options.onError?.(err);
   }
 
   private sendRaw(obj: unknown): void {
