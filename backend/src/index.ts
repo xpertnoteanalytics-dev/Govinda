@@ -27,6 +27,28 @@
 // RealtimeBridge's audio/session logic, and CallRequest are all
 // untouched — this only adds one fire-and-forget call at the point the
 // call is already torn down.
+//
+// ── Inbound/outbound note (2026-07-01) ─────────────────────────────────
+// Outbound calls always have a pre-existing Call document (created by
+// callService.initiateCall() before Exotel is ever dialed) — see
+// models/Call.ts and callService.ts. Customer-initiated inbound calls
+// have no such document today: nothing in this codebase creates a Call
+// document for them, so the lookup below finds nothing.
+//
+// IMPORTANT CAVEAT, left in deliberately rather than silently resolved:
+// this means the "no doc found" branch and the "lookup threw" (catch)
+// branch are BOTH currently treated as inbound. That collapses two
+// different situations — genuine inbound calls, and outbound calls whose
+// lookup failed for an unrelated reason (DB hiccup, a race between the
+// Exotel "start" event and Call.create() finishing, a bad
+// exotelCallSid match) — into the same signal. If Exotel's start event
+// (start.from / start.to / start.media_format, confirmed present in
+// production logs) turns out to reliably distinguish inbound from
+// outbound on its own, that should replace this doc-absence heuristic
+// entirely. Until then, this is what was explicitly requested: thread
+// direction into buildFallbackPrompt() rather than let promptBuilder.ts
+// infer it, so the moment a better signal exists, only this function
+// needs to change.
 
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
@@ -95,20 +117,24 @@ async function bootstrap() {
      *   1. Look up the Call document in MongoDB by exotelCallSid.
      *   2. Build a ResolvedCallContext directly from the stored fields.
      *   3. Render it with promptBuilder.buildRealtimePrompt().
-     *   4. If nothing is found or lookup fails: fall back to
-     *      buildFallbackPrompt().
+     *   4. If nothing is found: this is an inbound call (no Call document
+     *      is ever pre-created for inbound calls today) — render the
+     *      inbound fallback prompt.
+     *   5. If the lookup itself throws: also falls back to the inbound
+     *      prompt today — see the file-level note above on why this is
+     *      a known, deliberate simplification rather than a guess.
      */
     const resolveInstructions = async (callSid: string): Promise<string> => {
       try {
         const doc = await Call.findOne({ exotelCallSid: callSid })
           .select(
-            "placeName category organizationName objectiveType customObjectiveText businessContext notes enabledTools phoneNumber"
+            "placeName category organizationName objectiveType customObjectiveText businessContext notes enabledTools phoneNumber direction"
           )
           .lean();
 
         if (!doc) {
-          console.warn("[ws] no Call document found for callSid:", callSid);
-          return buildFallbackPrompt();
+          console.warn("[ws] no Call document found for callSid:", callSid, "— treating as inbound");
+          return buildFallbackPrompt(undefined, "inbound");
         }
 
         const ctx: ResolvedCallContext = {
@@ -125,16 +151,18 @@ async function bootstrap() {
 
         console.log(
           "[ws] call context resolved for callSid:", callSid,
-          "| objective:", ctx.objectiveType
+          "| objective:", ctx.objectiveType,
+          "| direction:", doc.direction
         );
 
         return buildRealtimePrompt(ctx);
       } catch (err) {
         console.error(
           "[ws] context resolution error for callSid:", callSid,
-          "|", err instanceof Error ? err.message : err
+          "|", err instanceof Error ? err.message : err,
+          "— treating as inbound"
         );
-        return buildFallbackPrompt();
+        return buildFallbackPrompt(undefined, "inbound");
       }
     };
 
