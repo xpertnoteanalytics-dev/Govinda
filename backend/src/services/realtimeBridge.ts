@@ -24,9 +24,26 @@
 // upgrade request. OpenAI's server now rejects any connection carrying
 // that header with error code "beta_api_shape_disabled" — the Beta
 // Realtime API shape is no longer supported; /v1/realtime now serves the
-// GA API by default with no beta header required. Confirmed from a live
-// call log: socket opened, then immediately received this error and
-// closed, before session.created ever fired.
+// GA API by default with no beta header required.
+//
+// ── GA API fix #2 (2026-07-01) ────────────────────────────────────────
+// session.update payload updated to the GA schema:
+//   - session.type: "realtime" is now a required discriminator field.
+//     Without it OpenAI rejects the update with
+//     missing_required_parameter / param: "session.type", session.updated
+//     never fires, sessionReady stays false, and the call hangs silently
+//     until Exotel's own timeout kills it.
+//   - turn_detection moved from a top-level session field to
+//     session.audio.input.turn_detection.
+//   - session.audio.input.format set explicitly to match what Exotel
+//     actually sends (8kHz, confirm μ-law vs raw PCM against your Exotel
+//     stream config — currently assuming g711 μ-law based on the
+//     media_format seen in the "start" event logs). Under beta this had
+//     an implicit default; GA requires format as a structured object.
+//   - output_modalities restricted to ["text"] since OpenAI is only used
+//     for text generation here — ElevenLabsClient owns all TTS/audio
+//     output. This avoids paying for/generating OpenAI audio output that
+//     would otherwise just be discarded.
 
 import WebSocket from "ws";
 import { TurnStateManager } from "./voice/TurnStateManager";
@@ -261,19 +278,43 @@ export class RealtimeBridge {
         this.log("[bridge] session.created — instructions resolved", {
           instructionsLength: instructions.length,
         });
+
+        // ── GA schema ────────────────────────────────────────────────
+        // "type": "realtime" is a required discriminator on the session
+        // object as of the GA Realtime API. turn_detection now lives
+        // under session.audio.input.turn_detection instead of at the
+        // top level. See file header "GA API fix #2" note.
         this.sendToOpenAi({
           type: "session.update",
           session: {
+            type: "realtime",
             instructions,
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.4,
-              silence_duration_ms: 600,
-              // Manual response.create gate: OpenAI never auto-creates a
-              // response. TurnStateManager.maybeCreateResponse() is the
-              // only path that ever sends response.create.
-              create_response: false,
-              interrupt_response: true,
+            // We only consume text out of OpenAI — ElevenLabsClient owns
+            // all speech synthesis — so there's no reason to have OpenAI
+            // generate audio output we'd just throw away.
+            output_modalities: ["text"],
+            audio: {
+              input: {
+                // Exotel sends 8kHz base64 audio (see media_format in the
+                // Exotel "start" event). Confirm μ-law vs linear PCM
+                // against your actual stream config; adjust the "type"
+                // value below if it's not g711 μ-law (e.g. "audio/pcm"
+                // with a 8000 sample rate wrapper, if supported, or
+                // resample client-side to 24kHz "audio/pcm" if not).
+                format: {
+                  type: "audio/pcmu",
+                },
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.4,
+                  silence_duration_ms: 600,
+                  // Manual response.create gate: OpenAI never auto-creates a
+                  // response. TurnStateManager.maybeCreateResponse() is the
+                  // only path that ever sends response.create.
+                  create_response: false,
+                  interrupt_response: true,
+                },
+              },
             },
           },
         });
