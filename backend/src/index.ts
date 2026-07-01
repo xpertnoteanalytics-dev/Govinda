@@ -49,6 +49,15 @@
 // direction into buildFallbackPrompt() rather than let promptBuilder.ts
 // infer it, so the moment a better signal exists, only this function
 // needs to change.
+//
+// ── callDirection wiring (2026-07-01) ────────────────────────────────────
+// When a Call document IS found, its `direction` field is now copied onto
+// ResolvedCallContext.callDirection before rendering, so promptBuilder's
+// identityBlock() can pick the correct opening for genuinely-found docs
+// too (today these are always "outbound" in practice, since inbound calls
+// never have a pre-created doc — but this keeps the two layers correctly
+// decoupled per the file-level note above, rather than promptBuilder ever
+// guessing at direction on its own).
 
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
@@ -115,7 +124,8 @@ async function bootstrap() {
      *
      * Steps:
      *   1. Look up the Call document in MongoDB by exotelCallSid.
-     *   2. Build a ResolvedCallContext directly from the stored fields.
+     *   2. Build a ResolvedCallContext directly from the stored fields,
+     *      including direction.
      *   3. Render it with promptBuilder.buildRealtimePrompt().
      *   4. If nothing is found: this is an inbound call (no Call document
      *      is ever pre-created for inbound calls today) — render the
@@ -147,6 +157,7 @@ async function bootstrap() {
           businessContext: doc.businessContext,
           notes: doc.notes,
           enabledTools: doc.enabledTools,
+          callDirection: doc.direction,
         };
 
         console.log(
