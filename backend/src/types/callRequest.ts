@@ -152,4 +152,17 @@ export interface ResolvedCallContext {
   businessContext?: string;
   notes?: string;
   enabledTools?: CallTool[];
+
+  /**
+   * "outbound" (Govinda initiating the call) vs "inbound" (the customer
+   * triggered the call). Mirrors ICall.direction in models/Call.ts.
+   *
+   * Populated by index.ts's resolveInstructions() from the resolved Call
+   * document's `direction` field. promptBuilder.ts's identityBlock() reads
+   * this to decide which opening script to use — it never infers direction
+   * itself. Optional because buildFallbackPrompt() (used when no Call doc
+   * is found, or lookup fails) takes direction as a separate explicit
+   * parameter instead of going through this type at all.
+   */
+  callDirection?: "outbound" | "inbound";
 }
