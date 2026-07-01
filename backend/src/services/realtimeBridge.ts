@@ -201,13 +201,11 @@ export class RealtimeBridge {
             audio: {
               input: {
                 format: {
-                  type: "audio/pcmu", // confirm vs Exotel's actual encoding
+                  type: "audio/pcmu",
                 },
-                // Switched from server_vad to semantic_vad: fixes rushed/
-                // cut-off replies on Hindi/Hinglish speech, which has more
-                // natural mid-sentence pauses than a fixed silence window
-                // handles well. eagerness "low" waits longer before
-                // deciding the caller is done speaking.
+                transcription: {
+                  model: "whisper-1",
+                },
                 turn_detection: {
                   type: "semantic_vad",
                   eagerness: "low",
@@ -311,6 +309,11 @@ export class RealtimeBridge {
         break;
       }
 
+      case "conversation.item.input_audio_transcription.completed":
+      case "input_audio_transcription.completed":
+        this.log("[TRANSCRIPT]", { transcript: event.transcript, type: event.type });
+        break;
+
       case "error": {
         const errorEventId = event.error?.event_id ?? event.event_id;
         const isFlushCommitError =
@@ -332,6 +335,7 @@ export class RealtimeBridge {
       }
 
       default:
+        this.log("[bridge] unhandled event type", { type: event.type });
         break;
     }
   }
