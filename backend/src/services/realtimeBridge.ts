@@ -3,19 +3,27 @@
 // Responsibility: stream audio between Exotel and the voice pipeline.
 //
 // This file contains ZERO business logic and ZERO prompt-writing code.
-// It receives a fully-formed instructions string from outside (via the
-// GuideResolver) and forwards it to OpenAI as-is.
+// It receives a fully-formed instructions string from outside (via
+// options.resolveInstructions, injected by index.ts) and forwards it to
+// OpenAI as-is.
 //
 // Turn ownership (who may speak, when, and whether a given response's
 // output is still valid) is owned entirely by TurnStateManager. This file
 // only wires raw events to it and moves bytes between sockets.
+//
+// ── callSid lifecycle note ─────────────────────────────────────────────
+// RealtimeBridge is constructed only once callSid is known (index.ts
+// delays construction until Exotel's "start" event arrives and extracts
+// call_sid from it). The constructor connects to OpenAI immediately —
+// this is safe precisely because callSid, and therefore
+// options.resolveInstructions(callSid), are already available at
+// construction time.
 
 import WebSocket from "ws";
 import { TurnStateManager } from "./voice/TurnStateManager";
 import { PhraseBuffer } from "./voice/PhraseBuffer";
 import { ElevenLabsClient } from "./voice/ElevenLabsClient";
 import { pcm16kBase64To8kBase64 } from "./voice/pcmResample";
-import { resolveGuideInstructions } from "./voice/GuideResolver";
 
 const COMMIT_FALLBACK_MS = 1200;
 const MAX_QUEUED_AUDIO_CHUNKS = 500;
@@ -27,6 +35,13 @@ interface RealtimeBridgeOptions {
   elevenLabsApiKey: string;
   elevenLabsVoiceId: string;
   callSid: string;
+  /**
+   * Resolves the fully-rendered OpenAI `instructions` string for this call.
+   * Injected by index.ts: looks up the Call document in MongoDB, builds a
+   * ResolvedCallContext, and renders it via promptBuilder.buildRealtimePrompt().
+   * RealtimeBridge never touches MongoDB or prompt logic directly.
+   */
+  resolveInstructions: (callSid: string) => Promise<string>;
 }
 
 export class RealtimeBridge {
@@ -82,16 +97,39 @@ export class RealtimeBridge {
   constructor(private readonly options: RealtimeBridgeOptions) {
     this.phraseBuffer = new PhraseBuffer();
 
+    // ElevenLabsClient reads its API key and voice id from env internally
+    // (see ElevenLabsClient.ts constructor) — it does not accept them as
+    // constructor options. onAudioChunk carries only the base64 PCM
+    // payload; the epoch/generation guard below compares against
+    // this.chunkGeneration, which is stamped just before each sendPhrase()
+    // call in flushPhraseToElevenLabs().
     this.elevenLabs = new ElevenLabsClient({
-      apiKey: options.elevenLabsApiKey,
-      voiceId: options.elevenLabsVoiceId,
-      onAudioChunk: (base64Pcm16k, generation) => this.onElevenLabsAudioChunk(base64Pcm16k, generation),
+      onAudioChunk: (base64Pcm16k) => this.onElevenLabsAudioChunk(base64Pcm16k),
+      onPhraseAudioComplete: () => {
+        this.sendToExotel({
+          event: "mark",
+          stream_sid: this.options.callSid,
+          mark: { name: "elevenlabs_phrase_done" },
+        });
+      },
+      onError: (err) => {
+        // ElevenLabs disconnected unexpectedly mid-call. There is no
+        // graceful fallback within this architecture (switching back to
+        // OpenAI audio mid-session is unsupported by the GA API). Close
+        // the OpenAI session cleanly to trigger the call-end flow.
+        this.log("[bridge] elevenlabs fatal error — terminating session", {
+          err: err.message,
+        });
+        if (this.openAiWs && this.openAiWs.readyState === WebSocket.OPEN) {
+          this.openAiWs.close(1011, "elevenlabs disconnect");
+        }
+      },
     });
 
     this.turnState = new TurnStateManager({
       sendResponseCreate: () => this.sendToOpenAi({ type: "response.create" }),
       sendResponseCancel: () => this.sendToOpenAi({ type: "response.cancel" }),
-      discardPhraseBuffer: () => this.phraseBuffer.reset(),
+      discardPhraseBuffer: () => this.phraseBuffer.discard(),
       discardElevenLabsQueue: () => this.elevenLabs.discardPending(),
       clearExotelPlayback: () => this.sendToExotel({ event: "clear", stream_sid: this.options.callSid }),
       log: (message, meta) => this.log(message, meta),
@@ -204,7 +242,14 @@ export class RealtimeBridge {
 
     switch (event.type) {
       case "session.created": {
-        const instructions = await resolveGuideInstructions(this.options.callSid);
+        // Personalized prompt: resolveInstructions is injected by index.ts
+        // and performs the Mongo lookup -> ResolvedCallContext ->
+        // buildRealtimePrompt(ctx) flow. RealtimeBridge itself has no
+        // knowledge of either MongoDB or prompt rendering.
+        const instructions = await this.options.resolveInstructions(this.options.callSid);
+        this.log("[bridge] session.created — instructions resolved", {
+          instructionsLength: instructions.length,
+        });
         this.sendToOpenAi({
           type: "session.update",
           session: {
@@ -213,6 +258,9 @@ export class RealtimeBridge {
               type: "server_vad",
               threshold: 0.4,
               silence_duration_ms: 600,
+              // Manual response.create gate: OpenAI never auto-creates a
+              // response. TurnStateManager.maybeCreateResponse() is the
+              // only path that ever sends response.create.
               create_response: false,
               interrupt_response: true,
             },
@@ -274,6 +322,8 @@ export class RealtimeBridge {
           // not a greeting.
           this.flushSpeechDetected = true;
         }
+        // Generation bump happens first (and unconditionally) inside
+        // TurnStateManager.onSpeechStarted() — see that method's I3 note.
         this.turnState.onSpeechStarted();
         break;
 
@@ -303,14 +353,19 @@ export class RealtimeBridge {
           this.log("[bridge] response.created missing response.id, ignoring", { event });
           break;
         }
+        // Accepted by TurnStateManager while lifecycle is "creating" OR
+        // "cancelling" — see TurnStateManager.onResponseCreated() for why
+        // the "cancelling" case must still record the id for correlation.
         this.turnState.onResponseCreated(responseId);
         break;
       }
 
       case "response.output_text.delta":
         if (this.turnState.shouldForwardText(event.response_id)) {
-          this.phraseBuffer.push(event.delta ?? "");
-          const phrase = this.phraseBuffer.maybeFlush();
+          // PhraseBuffer.push() returns the completed phrase directly when
+          // a flush boundary is hit, or null if the fragment was only
+          // buffered. There is no separate maybeFlush() method.
+          const phrase = this.phraseBuffer.push(event.delta ?? "");
           if (phrase) {
             this.flushPhraseToElevenLabs(phrase);
           }
@@ -430,12 +485,17 @@ export class RealtimeBridge {
 
   private flushPhraseToElevenLabs(phrase: string): void {
     this.transcriptLines.push(phrase);
+    // EPOCH TAG: stamp the current generation onto this.chunkGeneration
+    // BEFORE sending. onElevenLabsAudioChunk compares its value against
+    // turnState.getGeneration() at receive-time — if speech_started has
+    // bumped the generation since this phrase was sent, the resulting
+    // audio chunks are stale and are dropped before reaching Exotel.
     this.chunkGeneration = this.turnState.getGeneration();
-    this.elevenLabs.synthesize(phrase, this.chunkGeneration);
+    this.elevenLabs.sendPhrase(phrase);
   }
 
-  private onElevenLabsAudioChunk(base64Pcm16k: string, generation: number): void {
-    if (generation !== this.turnState.getGeneration()) {
+  private onElevenLabsAudioChunk(base64Pcm16k: string): void {
+    if (this.chunkGeneration !== this.turnState.getGeneration()) {
       // Epoch guard: this audio belongs to a generation that's since been
       // superseded by a barge-in. Drop it before it reaches Exotel.
       return;
