@@ -63,9 +63,7 @@ export class RealtimeBridge {
         });
       },
       onError: (err) => {
-        this.log("[bridge] elevenlabs fatal error — terminating session", {
-          err: err.message,
-        });
+        this.log("[bridge] elevenlabs fatal error — terminating session", { err: err.message });
         if (this.openAiWs && this.openAiWs.readyState === WebSocket.OPEN) {
           this.openAiWs.close(1011, "elevenlabs disconnect");
         }
@@ -159,7 +157,7 @@ export class RealtimeBridge {
     });
 
     this.openAiWs.on("open", () => {
-      this.log("[bridge] openai socket open");
+      this.log("[bridge] openai socket open", { model: this.options.openAiModel });
     });
 
     this.openAiWs.on("message", (data) => this.onOpenAiMessage(data.toString()));
@@ -192,31 +190,45 @@ export class RealtimeBridge {
           instructionsLength: instructions.length,
         });
 
-        this.sendToOpenAi({
-          type: "session.update",
-          session: {
-            type: "realtime",
-            instructions,
-            output_modalities: ["text"],
-            audio: {
-              input: {
-                format: {
-                  type: "audio/pcmu", // confirm vs Exotel's actual encoding
-                },
-                // Switched from server_vad to semantic_vad: fixes rushed/
-                // cut-off replies on Hindi/Hinglish speech, which has more
-                // natural mid-sentence pauses than a fixed silence window
-                // handles well. eagerness "low" waits longer before
-                // deciding the caller is done speaking.
-                turn_detection: {
-                  type: "semantic_vad",
-                  eagerness: "low",
-                  create_response: false,
-                  interrupt_response: true,
-                },
+        // Reverted from semantic_vad back to server_vad: semantic_vad's
+        // turn-completion classifier was unreliable on this 8kHz μ-law
+        // telephony stream, causing inconsistent "sometimes hears you,
+        // sometimes doesn't" behavior. server_vad is a simple
+        // energy/silence threshold, more predictable on lossy audio.
+        // Tuned for Hindi/Hinglish's longer natural pauses vs. English.
+        const sessionConfig = {
+          type: "realtime" as const,
+          instructions,
+          output_modalities: ["text"],
+          audio: {
+            input: {
+              format: {
+                type: "audio/pcmu", // confirm vs Exotel's actual encoding
+              },
+              turn_detection: {
+                type: "server_vad" as const,
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 900,
+                create_response: false,
+                interrupt_response: true,
               },
             },
           },
+        };
+
+        // Logged explicitly so it's verifiable from Render logs which
+        // VAD type/settings are actually live on a given deploy, instead
+        // of having to infer it from behavior.
+        this.log("[bridge] sending session.update", {
+          turnDetectionType: sessionConfig.audio.input.turn_detection.type,
+          silenceDurationMs: sessionConfig.audio.input.turn_detection.silence_duration_ms,
+          threshold: sessionConfig.audio.input.turn_detection.threshold,
+        });
+
+        this.sendToOpenAi({
+          type: "session.update",
+          session: sessionConfig,
         });
         break;
       }
@@ -337,7 +349,7 @@ export class RealtimeBridge {
   }
 
   // ---------------------------------------------------------------------
-  // Startup resolution (shared by committed ack, error ack, and watchdog)
+  // Startup resolution
   // ---------------------------------------------------------------------
 
   private resolveStartupIntent(): void {
