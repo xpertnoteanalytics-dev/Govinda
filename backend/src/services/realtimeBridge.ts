@@ -42,17 +42,12 @@ export class RealtimeBridge {
 
   private commitFallbackTimer: NodeJS.Timeout | null = null;
 
-  // No event_id echo on input_audio_buffer.committed, so we only ever
-  // allow one manual commit outstanding at a time to keep correlation sound.
   private awaitingFlushCommitAck = false;
   private flushSpeechDetected = false;
   private pendingFlushCommitEventId: string | null = null;
 
   private flushCommitWatchdog: NodeJS.Timeout | null = null;
   private static readonly FLUSH_COMMIT_WATCHDOG_MS = 6000;
-
-  // Grace window after an input_audio_buffer_commit_empty error on the
-  // flush commit, to let a lagging speech_started arrive before resolving.
   private static readonly FLUSH_EMPTY_COMMIT_GRACE_MS = 400;
 
   constructor(private readonly options: RealtimeBridgeOptions) {
@@ -160,7 +155,6 @@ export class RealtimeBridge {
     this.openAiWs = new WebSocket(url, {
       headers: {
         Authorization: `Bearer ${this.options.openAiApiKey}`,
-        // GA /v1/realtime rejects the beta header ("OpenAI-Beta: realtime=v1").
       },
     });
 
@@ -198,8 +192,6 @@ export class RealtimeBridge {
           instructionsLength: instructions.length,
         });
 
-        // GA schema: session.type is required; turn_detection lives under
-        // session.audio.input.turn_detection; format is now an object.
         this.sendToOpenAi({
           type: "session.update",
           session: {
@@ -211,10 +203,14 @@ export class RealtimeBridge {
                 format: {
                   type: "audio/pcmu", // confirm vs Exotel's actual encoding
                 },
+                // Switched from server_vad to semantic_vad: fixes rushed/
+                // cut-off replies on Hindi/Hinglish speech, which has more
+                // natural mid-sentence pauses than a fixed silence window
+                // handles well. eagerness "low" waits longer before
+                // deciding the caller is done speaking.
                 turn_detection: {
-                  type: "server_vad",
-                  threshold: 0.4,
-                  silence_duration_ms: 600,
+                  type: "semantic_vad",
+                  eagerness: "low",
                   create_response: false,
                   interrupt_response: true,
                 },
@@ -326,10 +322,6 @@ export class RealtimeBridge {
           this.clearFlushCommitWatchdog();
 
           if (event.error?.code === "input_audio_buffer_commit_empty") {
-            // Server hadn't finished ingesting the just-flushed append
-            // events yet. Give a short grace window for speech_started to
-            // arrive before deciding greeting vs reply, instead of
-            // resolving instantly off a stale snapshot.
             setTimeout(() => this.resolveStartupIntent(), RealtimeBridge.FLUSH_EMPTY_COMMIT_GRACE_MS);
           } else {
             this.resolveStartupIntent();
@@ -404,7 +396,7 @@ export class RealtimeBridge {
 
   private onElevenLabsAudioChunk(base64Pcm16k: string): void {
     if (this.chunkGeneration !== this.turnState.getGeneration()) {
-      return; // stale generation (barge-in happened) — drop
+      return;
     }
     const base64Pcm8k = pcm16kBase64To8kBase64(base64Pcm16k);
     this.sendToExotel({
