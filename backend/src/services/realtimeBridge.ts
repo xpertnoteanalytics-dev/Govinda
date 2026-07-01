@@ -11,7 +11,7 @@ import WebSocket from "ws";
 import { TurnStateManager } from "./voice/TurnStateManager";
 import { PhraseBuffer } from "./voice/PhraseBuffer";
 import { ElevenLabsClient } from "./voice/ElevenLabsClient";
-import { pcm16kBase64To8kBase64 } from "./voice/pcmResample";
+import { pcm16kBase64To8kBase64, pcm8kBase64To24kBase64 } from "./voice/pcmResample";
 
 const COMMIT_FALLBACK_MS = 1200;
 const MAX_QUEUED_AUDIO_CHUNKS = 500;
@@ -113,6 +113,12 @@ export class RealtimeBridge {
     }
   }
 
+  // Exotel sends raw/slin PCM16, 8kHz, mono, little-endian
+  // (media.payload, base64-encoded). OpenAI Realtime GA's audio/pcm
+  // input format only accepts a fixed 24kHz sample rate, so every
+  // inbound chunk is upsampled 8kHz -> 24kHz here, at the single point
+  // where inbound caller audio exists before being forwarded — same
+  // queuing/backpressure behavior as before, just resampled bytes.
   private onExotelMedia(payloadBase64: string | undefined): void {
     if (!payloadBase64) return;
 
@@ -124,18 +130,20 @@ export class RealtimeBridge {
       return;
     }
 
+    const payload24k = pcm8kBase64To24kBase64(payloadBase64);
     this.sendToOpenAi({
       type: "input_audio_buffer.append",
-      audio: payloadBase64,
+      audio: payload24k,
     });
   }
 
   private flushAudioQueue(): boolean {
     if (this.audioQueue.length === 0) return false;
     for (const payloadBase64 of this.audioQueue) {
+      const payload24k = pcm8kBase64To24kBase64(payloadBase64);
       this.sendToOpenAi({
         type: "input_audio_buffer.append",
-        audio: payloadBase64,
+        audio: payload24k,
       });
     }
     this.log("[bridge] flushed queued caller audio", { count: this.audioQueue.length });
@@ -200,8 +208,13 @@ export class RealtimeBridge {
             output_modalities: ["text"],
             audio: {
               input: {
+                // Exotel streams 8kHz PCM16; we upsample to 24kHz in
+                // onExotelMedia/flushAudioQueue before this ever
+                // reaches OpenAI, since audio/pcm is fixed at 24kHz
+                // per OpenAI's Realtime GA API reference.
                 format: {
-                  type: "audio/pcmu",
+                  type: "audio/pcm",
+                  rate: 24000,
                 },
                 transcription: {
                   model: "whisper-1",
