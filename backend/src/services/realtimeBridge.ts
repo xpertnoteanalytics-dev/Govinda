@@ -18,6 +18,15 @@
 // this is safe precisely because callSid, and therefore
 // options.resolveInstructions(callSid), are already available at
 // construction time.
+//
+// ── GA API fix (2026-07-01) ──────────────────────────────────────────────
+// Removed the "OpenAI-Beta": "realtime=v1" header from the WebSocket
+// upgrade request. OpenAI's server now rejects any connection carrying
+// that header with error code "beta_api_shape_disabled" — the Beta
+// Realtime API shape is no longer supported; /v1/realtime now serves the
+// GA API by default with no beta header required. Confirmed from a live
+// call log: socket opened, then immediately received this error and
+// closed, before session.created ever fired.
 
 import WebSocket from "ws";
 import { TurnStateManager } from "./voice/TurnStateManager";
@@ -209,7 +218,9 @@ export class RealtimeBridge {
     this.openAiWs = new WebSocket(url, {
       headers: {
         Authorization: `Bearer ${this.options.openAiApiKey}`,
-        "OpenAI-Beta": "realtime=v1",
+        // NOTE: "OpenAI-Beta": "realtime=v1" intentionally removed — GA
+        // /v1/realtime rejects connections carrying it with
+        // "beta_api_shape_disabled". See file header note.
       },
     });
 
